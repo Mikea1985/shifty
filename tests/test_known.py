@@ -17,7 +17,7 @@ from pytest import mark
 # -----------------------------------------------------------------------------
 sys.path.append(os.path.dirname(os.path.dirname(
                 os.path.realpath(__file__))))
-from shifty import known
+from shifty import known, dev_tools as dev
 
 
 # -----------------------------------------------------------------------------
@@ -29,14 +29,6 @@ DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(
 
 all_times = np.arange(2458436.5, 2458464.5, 7)
 # Some known RA and Dec values, for testing.
-rd_sedna_568 = np.array([[57.13679543, 57.06643479, 56.9959375, 56.92650964],
-                         [7.6546818, 7.63864473, 7.62472685, 7.61317996]])
-rd_sedna_000 = np.array([[57.13678729, 57.06642135, 56.99591895, 56.92648628],
-                         [7.65467493, 7.63863767, 7.62471952, 7.61317227]])
-rd_101583_568 = np.array([[59.88481527, 58.23262941, 56.55372248, 54.95238514],
-                          [8.51904281, 8.17400092, 7.9271755, 7.79798929]])
-rd_101583_000 = np.array([[59.88447843, 58.23191998, 56.55265927, 54.9510077],
-                          [8.51869996, 8.1736283, 7.92677384, 7.79756144]])
 aeiOoME_sedna = [484.5211488, 0.8426141, 11.93068, 144.24763,  # a, e, i, O
                  311.35275, 358.11740, 2459000.5]  # o, M, Epoch
 
@@ -81,7 +73,8 @@ def test__get_object_RADEC_from_horizons(object_name, obs_code, times):
     assert np.shape(K.RA) == np.shape(times)
     assert np.shape(K.Dec) == np.shape(times)
     # Test that K.RA, K.Dec have expected values.
-    expect_RADec = _radec_interp(times, _radec_from_file(object_name, obs_code))
+    expect_RADec = dev.radec_interp(times, dev.radec_from_file(object_name,
+                                                               obs_code))
     assert np.all(np.isclose(K.RA, expect_RADec[0], atol=0.00000001, rtol=0))
     assert np.all(np.isclose(K.Dec, expect_RADec[1], atol=0.00000001, rtol=0))
     print('\t Completed test__get_object_RADEC_from_horizons.')
@@ -89,12 +82,12 @@ def test__get_object_RADEC_from_horizons(object_name, obs_code, times):
 
 names_of_variables = ('object_name', 'obs_code', 'times')
 values_for_each_test = [
-   ('Sedna', '568', all_times),
-   ('101583', '568', all_times),
-   ('Sedna', '000', all_times),
-   ('101583', '000', all_times),
-   ('Sedna', '500@-95', all_times),
-   ('101583', '500@-95', all_times),
+   ('Sedna*', '568', all_times),
+   ('101583*', '568', all_times),
+   ('Sedna*', '000', all_times),
+   ('101583*', '000', all_times),
+   ('Sedna*', '500@-95', all_times),
+   ('101583*', '500@-95', all_times),
  ]
 @pytest.mark.parametrize(names_of_variables, values_for_each_test)
 def test_get_known_RADEC_name(object_name, obs_code, times):
@@ -113,7 +106,8 @@ def test_get_known_RADEC_name(object_name, obs_code, times):
     assert np.shape(K.Dec) == np.shape(times)
     assert np.shape(K.times) == np.shape(times)
     # Test that K.RA, K.Dec, K.times and K.obs_code have expected values.
-    expect_RADec = _radec_interp(times, _radec_from_file(object_name, obs_code))
+    expect_RADec = dev.radec_interp(times, dev.radec_from_file(object_name[:-1],
+                                                               obs_code))
     assert np.all(np.isclose(K.RA, expect_RADec[0], atol=0.00000001, rtol=0))
     assert np.all(np.isclose(K.Dec, expect_RADec[1], atol=0.00000001, rtol=0))
     assert np.all(K.times == times)
@@ -123,12 +117,12 @@ def test_get_known_RADEC_name(object_name, obs_code, times):
 
 names_of_variables = ('object_name', 'obs_code', 'times')
 values_for_each_test = [
-   ('Sedna', '568', all_times),
-   ('101583', '568', all_times),
-   ('Sedna', '000', all_times),
-   ('101583', '000', all_times),
-   ('Sedna', '500@-95', all_times),
-   ('101583', '500@-95', all_times),
+   ('Sedna*', '568', all_times),
+   ('101583*', '568', all_times),
+   ('Sedna*', '000', all_times),
+   ('101583*', '000', all_times),
+   ('Sedna*', '500@-95', all_times),
+   ('101583*', '500@-95', all_times),
  ]
 @pytest.mark.parametrize(names_of_variables, values_for_each_test)
 def test_instantiate_with_object_name(object_name, obs_code, times):
@@ -146,7 +140,8 @@ def test_instantiate_with_object_name(object_name, obs_code, times):
     assert np.shape(K.Dec) == np.shape(times)
     assert np.shape(K.times) == np.shape(times)
     # Test that K.RA, K.Dec, K.times and K.obs_code have expected values.
-    expect_RADec = _radec_interp(times, _radec_from_file(object_name, obs_code))
+    expect_RADec = dev.radec_interp(times, dev.radec_from_file(object_name[:-1],
+                                                               obs_code))
     assert np.all(np.isclose(K.RA, expect_RADec[0], atol=0.00000001, rtol=0))
     assert np.all(np.isclose(K.Dec, expect_RADec[1], atol=0.00000001, rtol=0))
     assert np.all(K.times == times)
@@ -173,7 +168,8 @@ def test__get_orbit_RADEC(orbit, obs_code, times):
     assert np.shape(K.RA) == np.shape(times)
     assert np.shape(K.Dec) == np.shape(times)
     # Test that K.RA, K.Dec have expected values.
-    expect_RADec = _radec_interp(times, _radec_from_file('Sedna', obs_code))
+    expect_RADec = dev.radec_interp(times, dev.radec_from_file('Sedna',
+                                                               obs_code))
     assert np.all(np.isclose(K.RA, expect_RADec[0], atol=0.00000001, rtol=0))
     assert np.all(np.isclose(K.Dec, expect_RADec[1], atol=0.00000001, rtol=0))
     print('\t Completed test__get_orbit_RADEC.')
@@ -201,7 +197,8 @@ def test_get_known_RADEC_orbit(orbit, obs_code, times):
     assert np.shape(K.Dec) == np.shape(times)
     assert np.shape(K.times) == np.shape(times)
     # Test that K.RA, K.Dec, K.times and K.obs_code have expected values.
-    expect_RADec = _radec_interp(times, _radec_from_file('Sedna', obs_code))
+    expect_RADec = dev.radec_interp(times, dev.radec_from_file('Sedna',
+                                                               obs_code))
     assert np.all(np.isclose(K.RA, expect_RADec[0], atol=0.00000001, rtol=0))
     assert np.all(np.isclose(K.Dec, expect_RADec[1], atol=0.00000001, rtol=0))
     assert np.all(K.times == times)
@@ -225,7 +222,7 @@ def test__get_object_XYZ_from_horizons(object_name, times):
     # Test that K.XYZ have expected shape.
     assert np.shape(K.XYZ) == (3, np.shape(times)[0])
     # Test that K.XYZ have expected values.
-    expect_XYZ = _xyz_interp(times, _xyz_from_file('Sedna'))
+    expect_XYZ = dev.xyz_interp(times, dev.xyz_from_file('Sedna'))
     #0.000000000001 AU is 15 cm
     assert np.all(np.isclose(K.XYZ, expect_XYZ, atol=0.000000000001, rtol=0))
     print('\t Completed test__get_object_XYZ_from_horizons.')
@@ -236,68 +233,17 @@ def test__get_object_XYZ_from_horizons(object_name, times):
 # -------------------------------------------------------------------------
 
 
-def _radec_interp(times, inputJRD):
-    '''
-    Interpolate the RA & Dec at the input times
-    input:
-    times - array of times for output
-    inputJRD - tuple of JD_, RA_ and Dec_ of data for interpolation
-    '''
-
-    JD_, RA_, Dec_ = inputJRD
-
-    # Interpolate the RA & Dec at the input times
-    return np.interp(times, JD_, RA_), np.interp(times, JD_, Dec_)
-
-
-def _radec_from_file(obj='Sedna', obs_code='C57'):  # Thus also works for 101583
-    '''
-    Read JD, RA & Dec from file for a given object and obs_code.
-    input:
-    obj      - string - object name
-    obs_code - string - observatory code. 
-    '''
-    if obs_code == '500@-95':
-        obs_code = 'C57'
-    filename = obj + '_ephem_' + obs_code + '.txt'
-    JD_, RA_, Dec_ = np.genfromtxt(os.path.join(DATA_DIR, filename),
-                                   delimiter=(17, 5, 13, 13),
-                                   usecols=(0, 2, 3), unpack=True)
-    return JD_, RA_, Dec_
-
-
-def _xyz_interp(times, inputJRD):
-    '''
-    Interpolate the XYZ at the input times
-    input:
-    times - array of times for output
-    inputJXYZ - tuple of JD_, X_, Y_ and Z_ of data for interpolation
-    '''
-
-    JD_, X_, Y_, Z_ = inputJRD
-
-    # Interpolate the RA & Dec at the input times
-    return (np.interp(times, JD_, X_), np.interp(times, JD_, Y_),
-            np.interp(times, JD_, Z_))
-
-
-def _xyz_from_file(obj='Sedna'):
-    '''
-    Read JD, X, Y and Z from file for a given object and obs_code.
-    input:
-    obj      - string - object name
-    '''
-    filename = obj + '_vector.txt'
-    JD_, X_, Y_, Z_ = np.genfromtxt(os.path.join(DATA_DIR, filename),
-                                    delimiter=(17, 66, 23, 3, 23, 3, 23),
-                                    usecols=(0, 2, 4, 6), unpack=True)
-    return JD_, X_, Y_, Z_
-
-
+# -------------------------------------------------------------------------
+# If this is run as main, run all the tests.
+# -------------------------------------------------------------------------
 # Won't need these calls if use pytest/similar
 if __name__ == '__main__':
     test_empty_instantiation()
+    test__get_object_RADEC_from_horizons('Sedna', '568', all_times)
     test_get_known_RADEC_name('Sedna', '568', all_times)
     test_instantiate_with_object_name('Sedna', '568', all_times)
+#    test__get_orbit_RADEC(orbit, '568', all_times)
+#    test_get_known_RADEC_orbit(orbit, '568' all_times)
+    test__get_object_XYZ_from_horizons('Sedna', all_times)
 
 # End of file

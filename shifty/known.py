@@ -19,7 +19,7 @@ from astroquery.jplhorizons import Horizons
 sys.path.append(os.path.dirname(os.path.dirname(
                 os.path.realpath(__file__))))
 from shifty.downloader import Downloader
-
+from shifty import dev_tools as dev
 
 # -----------------------------------------------------------------------------
 # Constants and Test data
@@ -80,7 +80,22 @@ class Known(Downloader):  # MA: Why is Downloader a base class here???
             self.obs_code = kwargs['obs_code']
 
         if 'object_name' in kwargs:
-            self._get_object_RADEC_from_horizons(**kwargs)
+            # For development purposes, we want to not overload JPL,
+            # so I'm redirecting calls for "Sedna" and "101583"
+            # to use the files in dev_data.
+            # This behaviour can be bypassed by adding a star to the name
+            # or using the provisional designation.
+            if kwargs['object_name'] == 'Sedna':
+                self._interpolate_radec_for_sedna(kwargs['times'],
+                                                  kwargs['obs_code'])
+            elif kwargs['object_name'] == '101583':
+                self._interpolate_radec_for_101583(kwargs['times'],
+                                                   kwargs['obs_code'])
+            else:
+                if kwargs['object_name'] == 'Sedna*' or\
+                   kwargs['object_name'] == '101583*':
+                    kwargs['object_name'] = kwargs['object_name'][:-1]
+                self._get_object_RADEC_from_horizons(**kwargs)
         elif 'orbit' in kwargs:
             self._get_orbit_RADEC(**kwargs)
         else:
@@ -212,86 +227,32 @@ class Known(Downloader):  # MA: Why is Downloader a base class here???
         '''
         Interpolate the RA & Dec at the input times.
         '''
-        return _interpolate_radec(times,
-                                  _radec_from_file(obj='Sedna',
-                                                   obs_code=obs_code))
+        (self.RA, self.Dec
+         ) = dev.radec_interp(times, dev.radec_from_file(obj='Sedna',
+                                                         obs_code=obs_code))
 
     def _interpolate_radec_for_101583(self, times, obs_code='C57'):
         '''
         Interpolate the RA & Dec at the input times.
         '''
-        return _interpolate_radec(times,
-                                  _radec_from_file(obj='Sedna',
-                                                   obs_code=obs_code))
+        (self.RA, self.Dec
+         ) = dev.radec_interp(times, dev.radec_from_file(obj='101583',
+                                                         obs_code=obs_code))
 
-    def _radec_for_sedna(self, obs_code='C57'):
+    def _radec_for_sedna(self, obs_code='C57'):  # Do we need this?
         '''
         Get RA & Dec at hourly intervals from file.
         '''
-        return _radec_from_file(obj='Sedna', obs_code=obs_code)
+        return dev.radec_from_file(obj='Sedna', obs_code=obs_code)
 
-    def _radec_for_101583(self, obs_code='C57'):
+    def _radec_for_101583(self, obs_code='C57'):  # Do we need this?
         '''
-            '''
-        return _radec_from_file(obj='101583', obs_code=obs_code)
+        Get RA & Dec at hourly intervals from file.
+        '''
+        return dev.radec_from_file(obj='101583', obs_code=obs_code)
 
 
-def _interpolate_radec(times, inputJRD):
-    '''
-    Interpolate the RA & Dec at the input times.
-    input:
-    times - array of times for output
-    inputJRD - tuple of JD_, RA_ and Dec_ of data for interpolation
-    '''
 
-    JD_, RA_, Dec_ = inputJRD
-
-    # Interpolate the RA & Dec at the input times
-    return np.interp(times, JD_, RA_), np.interp(times, JD_, Dec_)
-
-
-def _radec_from_file(obj='Sedna', obs_code='C57'):
-    '''
-    Read JD, RA & Dec from file for a given object and obs_code.
-    input:
-    obj      - string - object name
-    obs_code - string - observatory code. 
-    '''
-    if obs_code=='500@-95':
-        obs_code = 'C57'
-    filename = obj + '_ephem_' + obs_code + '.txt'
-    JD_, RA_, Dec_ = np.genfromtxt(os.path.join(DATA_DIR, filename),
-                                   delimiter=(17, 5, 13, 13),
-                                   usecols=(0, 2, 3), unpack=True)
-    return JD_, RA_, Dec_
-
-
-def _xyz_interp(times, inputJRD):
-    '''
-    Interpolate the XYZ at the input times
-    input:
-    times - array of times for output
-    inputJXYZ - tuple of JD_, X_, Y_ and Z_ of data for interpolation
-    '''
-
-    JD_, X_, Y_, Z_ = inputJRD
-
-    # Interpolate the RA & Dec at the input times
-    return (np.interp(times, JD_, X_), np.interp(times, JD_, Y_),
-            np.interp(times, JD_, Z_))
-
-
-def _xyz_from_file(obj='Sedna'):
-    '''
-    Read JD, X, Y and Z from file for a given object and obs_code.
-    input:
-    obj      - string - object name
-    '''
-    filename = obj + '_vector.txt'
-    JD_, X_, Y_, Z_ = np.genfromtxt(os.path.join(DATA_DIR, filename),
-                                    delimiter=(17, 66, 23, 3, 23, 3, 23),
-                                    usecols=(0, 2, 4, 6), unpack=True)
-    return JD_, X_, Y_, Z_
 
 
 # End of file
