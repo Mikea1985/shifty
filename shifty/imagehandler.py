@@ -703,10 +703,10 @@ def readOneImageAndHeader(filename=None, extno=0, verbose=False,
             # Some stupid telescopes record exposure time in unites 
             # other than seconds... allow for this.
             if isinstance(EXPUNIT, str) or isinstance(EXPUNIT, float):
-                timeunit = (1.0 if EXPUNIT=='d' else
-                            24.0 if EXPUNIT=='h' else
-                            1440.0 if EXPUNIT=='m' else
-                            86400.0 if EXPUNIT=='s' else
+                timeunit = (86400.0 if EXPUNIT=='d' else
+                            1440.0 if EXPUNIT=='h' else
+                            24.0 if EXPUNIT=='m' else
+                            1.0 if EXPUNIT=='s' else
                             EXPUNIT)
             else:
                 raise TypeError('EXPUNIT must be float or string')
