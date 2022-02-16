@@ -70,12 +70,14 @@ class OneImage(Downloader):
         verbose        - bool         - Print extra stuff if True
         EXPTIME        - str OR float - Exposure time in seconds
                                       - (keyword or value)
+        EXPUNIT        - str OR float - Units on exposure time
+                                      - ('s','m','h','d' or float seconds/unit)
         MAGZERO        - str OR float - Zeropoint magnitude
                                       - (keyword or value)
         MJD_START      - str OR float - MJD at start of exposure
                                       - (keyword or value)
         GAIN           - str OR float - Gain value (keyword or value)
-        FILTER         - str          - Filter name (keyword)
+        FILTER         - str          - Filter name (keyword or '-name')
         NAXIS1         - str OR int   - Number of pixels along axis 1
         NAXIS2         - str OR int   - Number of pixels along axis 2
         INSTRUMENT     - str          - Instrument name (keyword)
@@ -151,12 +153,14 @@ class DataEnsemble(Downloader):
         verbose        - bool         - Print extra stuff if True
         EXPTIME        - str OR float - Exposure time in seconds
                                       - (keyword or value)
+        EXPUNIT        - str OR float - Units on exposure time
+                                      - ('s','m','h','d' or float seconds/unit)
         MAGZERO        - str OR float - Zeropoint magnitude
                                       - (keyword or value)
         MJD_START      - str OR float - MJD at start of exposure
                                       - (keyword or value)
         GAIN           - str OR float - Gain value (keyword or value)
-        FILTER         - str          - Filter name (keyword)
+        FILTER         - str          - Filter name (keyword or '-name')
         NAXIS1         - str OR int   - Number of pixels along axis 1
         NAXIS2         - str OR int   - Number of pixels along axis 2
         INSTRUMENT     - str          - Instrument name (keyword)
@@ -294,12 +298,14 @@ class DataHandler():
         verbose        - bool         - Print extra stuff if True
         EXPTIME        - str OR float - Exposure time in seconds
                                       - (keyword or value)
+        EXPUNIT        - str OR float - Units on exposure time
+                                      - ('s','m','h','d' or float seconds/unit)
         MAGZERO        - str OR float - Zeropoint magnitude
                                       - (keyword or value)
         MJD_START      - str OR float - MJD at start of exposure
                                       - (keyword or value)
         GAIN           - str OR float - Gain value (keyword or value)
-        FILTER         - str          - Filter name (keyword)
+        FILTER         - str          - Filter name (keyword or '-name')
         NAXIS1         - str OR int   - Number of pixels along axis 1
         NAXIS2         - str OR int   - Number of pixels along axis 2
         INSTRUMENT     - str          - Instrument name (keyword)
@@ -502,6 +508,7 @@ class DataHandler():
                                                         K_obj.Dec[0], 0,
                                                         ra_dec_order=True)
             for i in np.arange(len(times)):
+                if self.verbose: print(i, times[i])
                 pixi = self.image_data.WCS[i].all_world2pix(K_obj.RA[i],
                                                             K_obj.Dec[i], 0,
                                                             ra_dec_order=True)
@@ -572,11 +579,13 @@ def readOneImageAndHeader(filename=None, extno=0, verbose=False,
     verbose        - bool         - Print extra stuff if True
     EXPTIME        - str OR float - Exposure time in seconds
                                   - (keyword or value)
+    EXPUNIT        - str OR float - Units on exposure time
+                                  - ('s','m','h','d' or float seconds/unit)
     MAGZERO        - str OR float - Zeropoint magnitude (keyword or value)
     MJD_START      - str OR float - MJD at start of exposure
                                   - (keyword or value)
     GAIN           - str OR float - Gain value (keyword or value)
-    FILTER         - str          - Filter name (keyword)
+    FILTER         - str          - Filter name (keyword or '-name')
     NAXIS1         - str OR int   - Number of pixels along axis 1
     NAXIS2         - str OR int   - Number of pixels along axis 2
     INSTRUMENT     - str          - Instrument name (keyword)
@@ -634,12 +643,15 @@ def readOneImageAndHeader(filename=None, extno=0, verbose=False,
                        'INSTRUMENT': 'Instrument name',
                        }
     key_values = {}
+    EXPUNIT = 's'
 
     # Do a loop over the kwargs and see if any header keywords need updating
     # (because they were supplied)
     for key, non_default_name in kwargs.items():
         if key in header_keywords:
             header_keywords[key] = non_default_name
+        if key=='EXPUNIT':
+            EXPUNIT = non_default_name
 
     # Read the file. Do inside a "with ... as ..." to auto close file after
     with fits.open(filename) as han:
@@ -651,12 +663,9 @@ def readOneImageAndHeader(filename=None, extno=0, verbose=False,
     # Use the defined keywords to save the values into key_values.
     # Search both headers if neccessary (using keyValue)
     for key, use in header_keywords.items():
-        if key not in ['INSTRUMENT', 'FILTER', 'NAXIS1', 'NAXIS2']:
-            # Most keywords can just have a float value defined
-            # instead of keyword name, that's what the if type is about.
-            key_values[key] = (use if isinstance(use, float) else
-                               float(_find_key_value(header, header0, use)))
-        elif key in ['NAXIS1', 'NAXIS2']:
+        if verbose:
+            print(key, use)
+        if key in ['NAXIS1', 'NAXIS2']:
             # Some keywords can have an integer value defined
             # instead of keyword name
             key_values[key] = (use if isinstance(use, int) else
@@ -672,6 +681,44 @@ def readOneImageAndHeader(filename=None, extno=0, verbose=False,
             # not all the junk (telescopes usually put numbers after)
             key_values[key] = (use[1] if use[0] == '-' else
                                _find_key_value(header, header0, use)[0])
+        elif key == 'MJD_START':
+            # Sometimes, like for Tess, the MJD of the start isn't given
+            # but can be calculated from the sum of a reference MJD and
+            # the time since that reference. 
+            # A + in the keyword is used to indicate the sum of two keywords.
+            if isinstance(use, float):
+                key_values[key] = use
+            elif isinstance(use, str):
+                uses = use.split('+')
+                key_values[key] = 0.
+                for usei in uses:
+                    try:  # see whether the value is just a number:
+                        key_values[key] += float(usei)
+                    except(ValueError):
+                        key_values[key] += float(_find_key_value(header,
+                                                                 header0, usei))
+            else:
+                raise TypeError('MJD_START must be float or string')
+        elif key == 'EXPTIME':
+            # Some stupid telescopes record exposure time in unites 
+            # other than seconds... allow for this.
+            if isinstance(EXPUNIT, str) or isinstance(EXPUNIT, float):
+                timeunit = (1.0 if EXPUNIT=='d' else
+                            24.0 if EXPUNIT=='h' else
+                            1440.0 if EXPUNIT=='m' else
+                            86400.0 if EXPUNIT=='s' else
+                            EXPUNIT)
+            else:
+                raise TypeError('EXPUNIT must be float or string')
+            key_values[key] = timeunit * (use if isinstance(use, float) else
+                                  float(_find_key_value(header, header0, use)))
+        else:
+            # Most keywords can just have a float value defined
+            # instead of keyword name, that's what the if type is about.
+            key_values[key] = (use if isinstance(use, float) else
+                               float(_find_key_value(header, header0, use)))
+        if verbose:
+            print(key_values.keys())
         header[f'SHIFTY_{key}'] = (key_values[key], header_comments[key])
         header['COMMENT'] = (f'SHIFTY_{key} added by SHIFTY'
                              f' at {str(datetime.today())[:19]}')
@@ -679,7 +726,7 @@ def readOneImageAndHeader(filename=None, extno=0, verbose=False,
 
     # Also define the middle of the exposure:
     key_values['MJD_MID'] = (key_values['MJD_START'] +
-                             key_values['EXPTIME'] / 172800.0)
+                             key_values['EXPTIME'] / (86400 * 2))
     header[f'SHIFTY_MJD_MID'] = (key_values['MJD_MID'],
                                  'MJD at middle of exposure')
     header['COMMENT'] = (f'SHIFTY_MJD_MID added by SHIFTY'
