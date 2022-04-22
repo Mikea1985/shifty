@@ -1,3 +1,6 @@
+# -*- coding: uft-8 -*-
+# shifty/shifty/known.py
+
 '''
 Methods to propagate known orbits for shifty.py
  - can be known *objects* or specified *orbit*

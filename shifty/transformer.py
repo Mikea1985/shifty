@@ -17,9 +17,8 @@ import getpass
 # import copy
 import numpy as np
 from astropy import units as u
-from astropy import constants
+from astropy import constants as c
 from astropy.time import Time
-from astropy.coordinates import SkyCoord
 
 # -----------------------------------------------------------------------------
 # Any local imports
@@ -38,150 +37,136 @@ sys.path.append(os.path.dirname(os.path.dirname(
 # -----------------------------------------------------------------------------
 # Define some constants
 # -----------------------------------------------------------------------------
-# I'm not sure why pylint is unable to find the members insice constants and u
-# but the warnings are annoying, so I'm turning those off.
-# pylint: disable=no-member
-speed_of_light = constants.c
-speed_of_light_auPday = constants.c.to(u.au / u.day).value
-au_km = u.au.to(u.km)
+
+# ECL = np.radians(23.43928)
+ECL = obliquityJ2000 = (84381.448 * (1. / 3600) * np.pi / 180.)  # Obliquity of ecliptic at J2000
 
 # -----------------------------------------------------------------------------
 # Various class definitions for *data import * in shifty
 # -----------------------------------------------------------------------------
 
+# Turning off some stupid syntax-checker warnings:
+# pylint: disable=too-many-instance-attributes, too-few-public-methods, too-many-arguments, attribute-defined-outside-init, no-member, import-outside-toplevel
+
 
 class Transformer():
     '''
-    (1)Keeps track of all the different coordinate systems
-    (2)Converts abg to xyz
-    (3)Converts abg to theta
-
-    methods:
-    --------
-
-    main public method:
-    -------------------
-    abg2theta()
-    get_light_travel_times()
-
+    Class for dealing with an object provided only tangent-plane parameters,
+    alpha, beta, gamma, alpha-dot, beta-dot, gamma-dot (abg for short).
     '''
-    # Turning off some stupid syntax-checker warnings:
-    # pylint: disable=too-many-instance-attributes
-    # Why on earth should an object only have 7 attributes?
-    # That seems dumb. Turning off this warning.
-    # pylint: disable=too-few-public-methods
-    # I get why an object should have at least two public methods in order to
-    # not be pointless, but it's an annoying warning during dev. Turning off.
 
-    def __init__(self, times=np.array([2459479.0, 2459480.0]),
-                 time0=2459479.0, radec0=np.array([0.0, +0.0]),
-                 verbose=False):
+    def __init__(self, times=None, obs_code=None, verbose=False):
         '''
-        inputs:
-        -------
-        time0       - float            - JD date (UTC) for reference time
-        times       - array of floats  - JD date (UTC) for observations
-        radec0      - list/array len=2 - Reference RA and Dec (in degrees)
-        verbose     - bool             - Print extra stuff if True
+        When object is initialized, either initialize blank object,
+        or initialize with an array of times and an obs_code.
+        When initialized with times & obs_code, calculate observer position
+        right away. This way, for a given set of images, the same object can
+        be used to calculate thetas from several different abg arrays, saving
+        computation as the observer location only has to be computed once.
         '''
-        # Make sure time is an array or list
-        times = np.array([times]) if (isinstance(times, int) |
-                                      isinstance(times, float)) else times
         self.times = times
-        self.time0 = time0
-        self.verbose = verbose
-        self.proj_mat = self._radec_to_proj_matrix(radec0)
-        self.obs_code = None
-        self.method = None
-
-    def __call__(self, abg=np.array([0, 0, 50., 0, 0, 0]), obs_code='500@-95',
-                 method='MPC'):
-        '''
-        input:
-        abg         - array length 6  - array containing alpha, beta, gamma,
-                                       alpha-dot, beta-dot, gamma-dot.
-        obs_code    - string          - Observatory code.
-                                        If using Horizons, note that Horizons
-                                        uses some weird ones sometimes,
-                                        like "500@-95" for Tess.
-        method      - 'JPL' or 'MPC'  - I don't really like using MPC code
-                                        as it wouldn't be publicly available(?).
-                                        But having a no-internet option would
-                                        also be good.
-        '''
         self.obs_code = obs_code
-        self.method = method
-        return self.abg2theta(abg)
+        self.verbose = verbose
+        self.abg = None
+        self.time0 = None
+        if times and obs_code:
+            self.observer_position = True
+        else:
+            self.observer_position = None
 
-    def abg2theta(self, abg):
+    def __call__(self, abg, time0, latlon0, wcs=None, verbose=None):
+        '''
+        Calculate thetas for a given set of ABG, reference time and reference
+        latitude & longitude.
+        If a WCS is also given, convert the thetas to pixel shifts.
+        '''
+        if verbose:  # Change self.verbose if verbose keyword defined.
+            self.verbose = verbose
+        self.abg = abg
+        self.time0 = time0
+        self.latlon0 = latlon0
+        if wcs:
+            # Calculate pixel shifts from thetas
+            thetas = self.abg2thetas()
+            pixels = self.thetas2pix(thetas, wcs)
+            return pixels.T - np.min(pixels, 1)
+        # else:
+        return self.abg2thetas()
+
+    def abg2theta(self, GM=c.GM_sun.to('au**3/year**2').value):
         '''
         Converts input abg to a theta vector at time dtime from reference time.
         inputs:
         -------
         abg    - array length 6 - array containing alpha, beta, gamma,
                                   alpha-dot, beta-dot, gamma-dot.
-        dtime  - float          - time after reference time.
+        timesJD - float - times in Julian days
         '''
-        dtime = (self.times - self.time0) / 365.24
-        grav = self._grav_pert(abg)
-        xyz_E = self._xyz_observer()
-        x_E, y_E, z_E = xyz_E.T
+        # convert times to YEARS since reference time,
+        # accounting for light travel time
+        light_travel_time = self._get_light_travel_times()
+        dtime = (self.times - self.time0) * u.day.to(u.yr) - light_travel_time
+        # Calculate gravitational effect
+        grav_x, grav_y, grav_z = self._get_gravitaty_vector(dtime, GM)
+        # XYZ of observer:
+        # flake8: W503
+        x_E, y_E, z_E = (self.observer_xyz.T if self.observer_xyz
+                         else self.get_observer_xyz().T)
+        num_x = (self.abg[0] + self.abg[3] * dtime
+                 + self.abg[2] * grav_x - self.abg[2] * x_E)
+        num_y = (self.abg[1] + self.abg[4] * dtime
+                 + self.abg[2] * grav_y - self.abg[2] * y_E)
+        denominator = (1 + self.abg[5] * dtime
+                       + self.abg[2] * grav_z - self.abg[2] * z_E)
+        theta_x = num_x / denominator                       # eq 6
+        theta_y = num_y / denominator                       # eq 6
+        # theta_x = abg[0] + abg[3] * dtime - abg[2] * x_E   # eq 16
+        # theta_y = abg[1] + abg[4] * dtime - abg[2] * y_E   # eq 16
         if self.verbose:
-            print(xyz_E)
-        num_x = abg[0] + abg[3] * dtime + abg[2] * grav[0] - abg[2] * x_E
-        num_y = abg[1] + abg[4] * dtime + abg[2] * grav[1] - abg[2] * y_E
-        denominator = 1 + abg[5] * dtime + abg[2] * grav[2] - abg[2] * z_E
-        theta_x = num_x / denominator
-        theta_y = num_y / denominator
-        #theta_x = abg[0]+abg[3] * dtime - abg[2]*x_E
-        #theta_y = abg[1]+abg[4] * dtime - abg[2]*y_E
-        return np.array([theta_x, theta_y]).T
+            print("Thetas are in radians!!!")
+        return np.array([theta_x, theta_y]).T  # These are radians!
 
-    def get_light_travel_times(self):
+    def _get_light_travel_times(self):
         '''
-        Calculate the Light Travel Time.
-        I'm not actually sure where I need this.
+        Calculate the light travel time from the object to the observer.
+        Units are years.
         '''
-        # Light travel times (in days?)
-        LTTs = np.array([vec[2] / speed_of_light_auPday
-                         for vec in self._xyz_observer()])
-        # Hang on, this doesn't seem right. 
-        # This is just the light travel time from the observer's
-        # location at the reference time to the observer's current location.
-        
-        return LTTs
+        # For now, just simplify and assume distance = 1/gamma
+        ltts = (1 / self.abg[2] * (u.au / c.c).to(u.yr)).value
+        return ltts
 
-    def _grav_pert(self, abg):
+    def _get_gravitity_vector(self, dtime, GM=c.GM_sun.to('au**3/year**2').value):
         '''
         g(t), the gravitational perturbation vector, calculated from equations
         (2), (3) and (4) of B&K 2000.
-        For now, just using perturbations=0, sufficient for TNOs & t<<1 yr.
+        For now, just using perturbations from sun only, sufficient for TNOs & t<<1 yr.
         '''
-        # print("grav_pert not implemented, yet. "
-        #       "Enjoy zero gravity while it lasts!")
-        # print(abg)
-        return np.zeros(3)  # should this be a 6 or 9 vector? (derivatives)?
+        acc_z = - GM * self.abg[2] ** 2
+        grav_x, grav_y, grav_z = 0, 0, 0.5 * acc_z * dtime ** 2
+        return grav_x, grav_y, grav_z
 
-    def _xyz_observer(self):
+    def get_observer_xyz(self):
         '''
         X_E(t) vector.
-        Calculates the locations of the observer relative to the reference.
+        Calculates the locations of the observer relative to the reference,
+        in projection coordinate frame.
         '''
-        helio_obs_xyz = self._get_observatory_position()
-        helio_obs_xyz0 = self._get_observatory_position(reference=True)
-        rel_helio_obs_xyz = helio_obs_xyz - helio_obs_xyz0
-        projection_obs_xyz = self._do_transformation(rel_helio_obs_xyz)
-        return projection_obs_xyz
-        #return np.zeros([12,3])
+        # Observer's heliocentric ecliptic location at all times.
+        observer_helio_ecliptic = self._observer_heliocentric_ecliptic_XYZ()
+        # Observer's heliocentric ecliptic location at reference times.
+        observer_helio_ecliptic0 = self._observer_heliocentric_ecliptic_XYZ(reference=True)
+        # Observer's ecliptic location relative to the location at the reference time
+        observer_helio_ecliptic_relative = observer_helio_ecliptic - observer_helio_ecliptic0
+        # Convert observer location to projection coordinate system.
+        observer_projected = np.array([xyz_ec_to_proj(*obspos, *self.latlon0)
+                                       for obspos in
+                                       observer_helio_ecliptic_relative])
+        return observer_projected
 
-    def _get_observatory_position(self, reference=False):
+    def _observer_heliocentric_ecliptic_XYZ(self, reference=False):
         '''
-        Query horizons for the observatory position at a sequence of times.
-        Uses MPC tools rather than horizons if self.method='MPC'
-        or if horizons fails (no internet?)
-        input:
-        reference   - boolean - False = use self.times
-                              - True  = use self.time0 reference time
+        Get the heliocentric ecliptic position of the observer.
+        If reference=True, use reference time, otherwise all times.
         '''
         if reference:
             args = {'times': self.time0, 'obs_code': self.obs_code,
@@ -189,65 +174,43 @@ class Transformer():
         else:
             args = {'times': self.times, 'obs_code': self.obs_code,
                     'verbose': self.verbose}
-        # Use Horizons if explicitly requested:
+        # Use Horizons if explicitly requested (or if stupid JPL obs_code):
         if (len(self.obs_code) != 3) | (self.method == 'JPL'):
-            return get_heliocentric_equatorial_XYZ_from_JPL(**args)
+            return _observer_heliocentric_ecliptic_XYZ_from_JPL(**args)
         # Otherwise, try using MPC tools first.
         try:
-            return get_heliocentric_equatorial_XYZ_from_MPC(**args)
-        except:  # If MPC tools fail, use Horizons.
-            return get_heliocentric_equatorial_XYZ_horizons(**args)
+            return _observer_heliocentric_ecliptic_XYZ_from_MPC(**args)
+        except (ModuleNotFoundError, ValueError, NameError):
+            # If MPC tools fail, use Horizons anyway
+            return _observer_heliocentric_ecliptic_XYZ_from_JPL(**args)
 
-    def _do_transformation(self, observatory_posn):
+    def thetas2pix(self, thetas, wcs):
         '''
-        Rotate the observatory position from ecliptic cartesian to
-        projection coordinates.
+        Use a given WCS to convert thetas (in arc-seconds) to pixel shift.
         '''
-        # Rotate the observatory position for each time
-        rotated_observatory_posn = [np.dot(self.proj_mat, obspos)
-                                    for obspos in observatory_posn]
-        return np.array(rotated_observatory_posn)
-
-    def _radec_to_proj_matrix(self, radec_ref=np.array([0., 0.])):
-        '''This routine returns the 3-D rotation matrix for the
-        given reference ra & dec.
-        # mat is a rotation matrix that converts from ecliptic
-        # vectors to the projection coordinate system.
-        # The projection coordinate system has z outward,
-        # x parallel to increasing ecliptic longitude, and
-        # y northward, making a right-handed system
-        '''
-        coord_ref = SkyCoord(ra=radec_ref[0] * u.deg, dec=radec_ref[1] * u.deg,
-                             distance=50 * u.au)
-        # I don't actually think the distance assumed changes the final result,
-        # but just in case, I'm assuming 50 au above.
-        x_ref, y_ref, z_ref = coord_ref.cartesian.xyz.value
-        r = np.sqrt(x_ref * x_ref + y_ref * y_ref + z_ref * z_ref)
-        lon0 = np.arctan2(y_ref, x_ref)
-        lat0 = np.arcsin(z_ref / r)
-        slon0 = np.sin(lon0)
-        clon0 = np.cos(lon0)
-        slat0 = np.sin(lat0)
-        clat0 = np.cos(lat0)
-
-        mat = np.array([[-slon0, clon0, 0],
-                        [-clon0 * slat0, -slon0 * slat0, clat0],
-                        [clon0 * clat0, slon0 * clat0, slat0]])
-
-        return mat
+        # Convert thetas to longitudes and latitudes
+        latlon_from_abg = proj_to_ec(thetas[:, 0], thetas[:, 1], *self.latlon0)
+        # Convert latitutde and longitude to RA and Dec
+        radec_from_abg = np.degrees(ec_to_eq(*latlon_from_abg))
+        # Convert RA and Dec to pixel coordinates
+        if np.shape(wcs) == ():
+            pix_from_abg = np.array(wcs.all_world2pix(radec_from_abg[0, :],
+                                                      radec_from_abg[1, :],
+                                                      0))[::-1]
+        else:  # assume one wcs per image
+            pix_list = []
+            for i, wcsi in enumerate(wcs):
+                pix_from_abg.append(wcsi.all_world2pix(radec_from_abg[0, i],
+                                                       radec_from_abg[1, i],
+                                                       0))
+            pix_from_abg = np.array(pix_list).T[::-1]
+        return pix_from_abg
 
 
-# -------------------------------------------------------------------------
-# These functions really don't need to be methods, and therefore aren't.
-# They are more versatile (and easier to test) as functions.
-# No need to over-complicate things.
-# -------------------------------------------------------------------------
-
-
-def get_heliocentric_equatorial_XYZ_from_JPL(times, obs_code='500',
-                                            verbose=False):
+def _observer_heliocentric_ecliptic_XYZ_from_JPL(times, obs_code='500',
+                                                 verbose=False):
     '''
-    Query horizons for the EQUATORIAL heliocentric
+    Query horizons for the ECLIPTIC heliocentric
     observatory position at a sequence of times.
 
     input:
@@ -256,22 +219,42 @@ def get_heliocentric_equatorial_XYZ_from_JPL(times, obs_code='500',
                   like "500@-95" for Tess.
     times       - array of JD times (UTC)
     '''
+    # Import here rather than at top level, to avoid loading if unneccessary.
     from astroquery.jplhorizons import Horizons
     times_AP = Time(times, format='jd', scale='utc')
-    # convert times to tdb
+    # convert times to tdb, the time system used by Horizons for vectors.
     times_tdb = times_AP.tdb.value
     horizons_query = Horizons(id='10', location=obs_code,
                               epochs=times_tdb, id_type='id')
-    horizons_vector = horizons_query.vectors(refplane='earth')
-    helio_OBS_equ = 0 - np.array([horizons_vector['x'], horizons_vector['y'],
+    horizons_vector = horizons_query.vectors(refplane='ecliptic')
+    helio_OBS_ecl = 0 - np.array([horizons_vector['x'], horizons_vector['y'],
                                   horizons_vector['z']]).T
     if verbose:
         print('No verbosity implemented yet, sorry')
-    return helio_OBS_equ
+    return helio_OBS_ecl
 
 
-def get_heliocentric_equatorial_XYZ_from_MPC(times, obs_code='500',
-                                             verbose=False):
+def _observer_heliocentric_ecliptic_XYZ_from_MPC(times, obs_code='500',
+                                                 verbose=False):
+    '''
+    Get the heliocentric ECLIPTIC vector coordinates of the
+    observatory at the time jd_utc.
+
+    input:
+    obs_code    - string
+    times       - JD time (UTC)
+    '''
+    helio_OBS_equ = _observer_heliocentric_equatorial_XYZ_from_MPC(times,
+                                                                   obs_code,
+                                                                   verbose)
+    helio_OBS_ecl = []
+    for hequ in helio_OBS_equ:
+        helio_OBS_ecl.append(_equatorial_to_ecliptic(hequ))
+    return np.array(helio_OBS_ecl)
+
+
+def _observer_heliocentric_equatorial_XYZ_from_MPC(times, obs_code='500',
+                                                   verbose=False):
     '''
     Get the heliocentric EQUATORIAL vector coordinates of the
     observatory at the time jd_utc.
@@ -294,71 +277,186 @@ def get_heliocentric_equatorial_XYZ_from_MPC(times, obs_code='500',
     return np.array(helio_OBS_equ)
 
 
-def get_heliocentric_ecliptic_XYZ_from_MPC(times, obs_code='500',
-                                           verbose=False):
-    '''
-    Get the heliocentric ECLIPTIC vector coordinates of the
-    observatory at the time jd_utc.
-
-    input:
-    obs_code    - string
-    times       - JD time (UTC)
-    '''
-    helio_OBS_equ = get_heliocentric_equatorial_XYZ_from_MPC(times, obs_code,
-                                                             verbose)
-    helio_OBS_ecl = []
-    for hequ in helio_OBS_equ:
-        helio_OBS_ecl.append(equatorial_to_ecliptic(hequ))
-    return np.array(helio_OBS_ecl)
-
-
-def equatorial_to_ecliptic(input_xyz, ecliptic_to_equatorial=False):
+def _equatorial_to_ecliptic(input_xyz):
     '''
     Convert an cartesian vector from mean equatorial to mean ecliptic.
-    ecliptic_to_equatorial=True converts backwards, from ecliptic to equatorial.
     input:
         input_xyz              - np.array length 3
-        ecliptic_to_equatorial - boolean
     output:
         output_xyz - np.array length 3
     '''
     # MPC_library imported here, as it is an optional dependancy
-    direction = -1 if ecliptic_to_equatorial else +1
-    rotation_matrix = get_rotation_matrix(direction)
+    rotation_matrix = get_rotation_matrix()
     output_xyz = np.dot(rotation_matrix, input_xyz.reshape(-1, 1)).flatten()
     return output_xyz
 
 
-def get_rotation_matrix(direction):
+def get_rotation_matrix():
     '''
     This function is inspired by the "rotate_matrix" function in the
     MPC_library, but is placed here to reduce non-trivial dependencies.
     '''
-    obliquityJ2000 = (84381.448*(1./3600)*np.pi/180.) # Obliquity of ecliptic at J2000
     cose = np.cos(obliquityJ2000)
     sine = np.sin(-obliquityJ2000)
-    rotation_matrix = np.array([[1.0,   0.0,  0.0],
-                                [0.0,  cose, sine],
+    rotation_matrix = np.array([[1.0, 0.0, 0.0],
+                                [0.0, cose, sine],
                                 [0.0, -sine, cose]])
     return rotation_matrix
 
 
-def eq2ecl(rad, decd, reverse=False):
+# -------------------------------------------------------------------------
+# These functions really don't need to be methods, and therefore aren't.
+# They are more versatile (and easier to test) as functions.
+# No need to over-complicate things.
+# -------------------------------------------------------------------------
+
+'''Here are some functions piped from Bernstein's transform.c, part of orbfit'''
+
+
+def check_latlon0(lat0, lon0):
     '''
-    Function for quickly converting from equatorial (RA, Dec)
-    to ecliptic latitude and longitude (l, b).
+    This function is adapted from Bernstein's transform.c, part of orbfit.
+    It doesn't actually check anything here,
+    just calculates all the sines and cosines.
     '''
-    epsilon = np.radians(-23.43928 if reverse else 23.43928)
-    ra = np.radians(rad)
-    dec = np.radians(decd)
-    sine = np.sin(epsilon)
-    cose = np.cos(epsilon)
-    sina = np.sin(ra)
-    cosa = np.cos(ra)
-    sind = np.sin(dec)
-    cosd = np.cos(dec)
-    sinb = cose * sind - sine * cosd * sina
-    tanl = (cose * cosd * sina + sine * sind) / (cosd * cosa)
-    return np.arctan(tanl), np.arcsin(sinb)
+    clat0 = np.cos(lat0)
+    slat0 = np.sin(lat0)
+    clon0 = np.cos(lon0)
+    slon0 = np.sin(lon0)
+
+    return clat0, slat0, clon0, slon0
+
+
+def ec_to_proj(lat_ec, lon_ec, lat0, lon0):
+    '''
+    First routine goes from ecliptic lat/lon to projected x/y angles
+
+    This function is adapted from Bernstein's transform.c, part of orbfit.
+    '''
+    clat0, slat0, _, _ = check_latlon0(lat0, lon0)
+    cdlon = np.cos(lon_ec - lon0)
+    sdlon = np.sin(lon_ec - lon0)
+    clat = np.cos(lat_ec)
+    slat = np.sin(lat_ec)
+
+    xp = clat * sdlon
+    yp = clat0 * slat - slat0 * clat * cdlon
+    zp = slat0 * slat + clat0 * clat * cdlon
+
+    return xp / zp, yp / zp
+
+
+def proj_to_ec(x_proj, y_proj, lat0, lon0):
+    '''
+    Now the inverse, from projected xy to ecliptic lat/lon
+
+    This function is adapted from Bernstein's transform.c, part of orbfit.
+    '''
+    clat0, slat0, _, _ = check_latlon0(lat0, lon0)
+
+    zp = 1. / np.sqrt(1 + x_proj * x_proj + y_proj * y_proj)
+    lat_ec = np.arcsin(zp * (slat0 + y_proj * clat0))
+    lon_ec = lon0 + np.arcsin(x_proj * zp / np.cos(lat_ec))
+
+    return lat_ec, lon_ec
+
+
+def xyz_ec_to_proj(x_ec, y_ec, z_ec, lat0, lon0):
+    '''
+    Next go from x,y,z in ecliptic orientation to x,y,z in tangent-point orientiation.
+
+    This function is adapted from Bernstein's transform.c, part of orbfit.
+    '''
+    clat0, slat0, clon0, slon0 = check_latlon0(lat0, lon0)
+
+    x_p = -slon0 * x_ec + clon0 * y_ec
+    y_p = -clon0 * slat0 * x_ec - slon0 * slat0 * y_ec + clat0 * z_ec
+    z_p = clon0 * clat0 * x_ec + slon0 * clat0 * y_ec + slat0 * z_ec
+
+    return x_p, y_p, z_p
+
+
+def xyz_proj_to_ec(x_p, y_p, z_p, lat0, lon0):
+    '''
+    And finally from tangent x,y,z to ecliptic x,y,z.
+
+    This function is adapted from Bernstein's transform.c, part of orbfit.
+    '''
+    clat0, slat0, clon0, slon0 = check_latlon0(lat0, lon0)
+
+    x_ec = -slon0 * x_p - clon0 * slat0 * y_p + clon0 * clat0 * z_p
+    y_ec = clon0 * x_p - slon0 * slat0 * y_p + slon0 * clat0 * z_p
+    z_ec = clat0 * y_p + slat0 * z_p
+
+    return x_ec, y_ec, z_ec
+
+
+def eq_to_ec(ra_eq, dec_eq):
+    '''
+    First takes RA,DEC in equatorial to ecliptic.
+
+    This function is adapted from Bernstein's transform.c, part of orbfit.
+    '''
+    se = np.sin(ECL)
+    ce = np.cos(ECL)
+    sd = ce * np.sin(dec_eq) - se * np.cos(dec_eq) * np.sin(ra_eq)
+    lat_ec = np.arcsin(sd)
+
+    y = ce * np.cos(dec_eq) * np.sin(ra_eq) + se * np.sin(dec_eq)
+    x = np.cos(dec_eq) * np.cos(ra_eq)
+    lon_ec = np.arctan2(y, x)
+
+    return lat_ec, lon_ec
+
+
+def xyz_eq_to_ec(x_eq, y_eq, z_eq):
+    '''
+    And transform x,y,z from eq to ecliptic
+
+    This function is adapted from Bernstein's transform.c, part of orbfit.
+    '''
+    se = np.sin(ECL)
+    ce = np.cos(ECL)
+
+    x_ec = x_eq
+    y_ec = ce * y_eq + se * z_eq
+    z_ec = -se * y_eq + ce * z_eq
+
+    return x_ec, y_ec, z_ec
+
+
+def ec_to_eq(lat_ec, lon_ec):
+    '''
+    And transform x,y,z from eq to ecliptic.
+
+    To reverse above, just flip sign of ECL effectively.
+    '''
+    se = np.sin(-ECL)
+    ce = np.cos(ECL)
+
+    sd = ce * np.sin(lat_ec) - se * np.cos(lat_ec) * np.sin(lon_ec)
+    dec_eq = np.arcsin(sd)
+
+    y = ce * np.cos(lat_ec) * np.sin(lon_ec) + se * np.sin(lat_ec)
+    x = np.cos(lat_ec) * np.cos(lon_ec)
+    ra_eq = np.arctan2(y, x)
+
+    return ra_eq, dec_eq
+
+
+def xyz_ec_to_eq(x_ec, y_ec, z_ec):
+    '''
+    And transform x,y,z from ecliptic to eq.
+
+    To reverse above, just flip sign of ECL effectively.
+    '''
+    se = np.sin(-ECL)
+    ce = np.cos(ECL)
+
+    x_eq = x_ec
+    y_eq = ce * y_ec + se * z_ec
+    z_eq = -se * y_ec + ce * z_ec
+
+    return x_eq, y_eq, z_eq
 
 # END
