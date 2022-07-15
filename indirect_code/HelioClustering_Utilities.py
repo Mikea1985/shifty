@@ -1,4 +1,4 @@
-import MPC_library
+from mpcpp import MPC_library
 import numpy as np 
 import sys, os
 

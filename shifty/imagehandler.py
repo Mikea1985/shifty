@@ -256,6 +256,76 @@ class DataEnsemble(Downloader):
             self.reprojected = True
 
 
+    def reproject_data2(self, target=0, padmean=False):
+        '''
+        Reprojects each layer of self.data to be aligned, using their WCS.
+        By default aligns everything else with the first image,
+        but this can be changed by setting target.
+
+        inputs:
+        -------
+        self.data, self.WCS, self.header
+        target    - int - Index of the target image to align relative to
+
+        outputs:
+        --------
+        self.data
+        self.wcs
+        self.header
+        self.reprojected = True
+        '''
+        if self.reprojected:
+            print('Data has already been aligned and reprojected! '
+                  'Doing nothing!')
+        else:
+            # Offsets
+            offsetsl = []
+            for i, w in enumerate(self.WCS):
+                offsetsl.append(self.WCS[target].all_world2pix(*w.all_pix2world(0, 0, 0), 0))
+                offsets = np.array(offsetsl).round().astype(int)[:,::-1]
+            # Make sure offsets are all positive (by subtracting smallest value)
+            offsets[:, 0] -= offsets[:, 0].min()
+            offsets[:, 1] -= offsets[:, 1].min()
+            # Find max offset, to know how much to pad
+            ymax = offsets[:, 0].max()
+            xmax = offsets[:, 1].max()
+
+            padded = []
+            for i, dat in enumerate(self.data):
+                pad_value = np.nanmean(dat) if padmean else np.nan  # Mean or NaN
+                pad_size = ((offsets[i, 0], ymax - offsets[i, 0]),  # Size of pad
+                            (offsets[i, 1], xmax - offsets[i, 1]))  # on 4 sides
+                # Align the array by adding a padding around the edge
+                paddedi = np.pad(dat, pad_size, constant_values=pad_value)
+                padded.append(paddedi)
+                # Update WCS, both in .wcs and .header
+                self.WCS[i].wcs.crpix += (offsets[i, 1], offsets[i, 0])
+
+            reprojected = []
+            for i, dat in enumerate(self.data):
+                print(f"Reprojecting image {i}")
+                if i != target:  # Don't reproject the target image, duh!
+                    # Do the reprojection
+                    reprojecti = wcs_project(CCDData(padded[i], wcs=self.WCS[i],
+                                             unit='adu'), self.WCS[target])
+                    # Append to list
+                    reprojected.append(reprojecti.data)
+                    # Update WCS, both in self.wcs and self.header
+                    self.WCS[i] = self.WCS[target]
+                    # Update WCS, both in self.wcs and self.header
+                    self.WCS[i] = self.WCS[target]
+                    del self.header[i]['CD?_?']  # required for update to work
+                    self.header[i].update(self.WCS[i].to_header(relax=True))
+                    # Add a comment to the header about the reprojection
+                    now = str(datetime.today())[:19]
+                    self.header[i]['COMMENT'] = (f'Data was reprojected to WCS '
+                                                 f'of file {target} at {now}')
+                else:
+                    reprojected.append(padded[i])
+                self.data = np.array(reprojected)
+            self.reprojected = True
+
+
 class DataHandler():
     '''
     (1) Loads a list of fits-files, via DataEnsemble
@@ -362,7 +432,7 @@ class DataHandler():
         for i, dat in enumerate(self.image_data.data):
             if self.verbose:
                 print(f'Shifting image {i} by {shifts[i]}')
-            pad_value = np.mean(dat) if padmean else np.nan  # Mean or NaN
+            pad_value = np.nanmean(dat) if padmean else np.nan  # Mean or NaN
             pad_size = ((shifts[i, 0], ymax - shifts[i, 0]),  # Size of pad
                         (shifts[i, 1], xmax - shifts[i, 1]))  # on 4 sides
             # Shift the array by adding a padding around the edge
@@ -447,11 +517,11 @@ class DataHandler():
         if median_combine:  # slower; only if median is desired.
             print(' using median stacking.')
 #            self.stacked_data.data = combiner.median_combine()  # Slow method
-            self.stacked_data.data = np.median(data, 0)
+            self.stacked_data.data = np.nanmedian(data, 0)
         else:  # Default
             print(' using mean stacking')
 #            self.stacked_data = combiner.average_combine()  # Slow method
-            self.stacked_data.data = np.mean(data, 0)
+            self.stacked_data.data = np.nanmean(data, 0)
         if isinstance(which_WCS, int):
             wcsidx = which_WCS
         elif isinstance(which_WCS, str):
@@ -692,11 +762,18 @@ def readOneImageAndHeader(filename=None, extno=0, verbose=False,
                 uses = use.split('+')
                 key_values[key] = 0.
                 for usei in uses:
+                    if '*' in usei:
+                        multiplier = eval(''.join(usei.split('*')[1:]))
+                        usei = usei.split('*')[0]
+                    else:
+                        multiplier = 1
                     try:  # see whether the value is just a number:
-                        key_values[key] += float(usei)
+                        key_values[key] += float(usei) * multiplier
                     except(ValueError):
-                        key_values[key] += float(_find_key_value(header,
-                                                                 header0, usei))
+                        key_values[key] += (float(_find_key_value(header,
+                                                                  header0,
+                                                                  usei))
+                                            * multiplier)
             else:
                 raise TypeError('MJD_START must be float or string')
         elif key == 'EXPTIME':
