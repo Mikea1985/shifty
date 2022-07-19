@@ -55,6 +55,9 @@ Thumbs.db
 *.pred
 *.abg
 *.obs
+*Copy*
+*Junk*
+*junk*
 
 # VIm swap files
 *.swp

@@ -55,7 +55,7 @@ class Transformer():
     alpha, beta, gamma, alpha-dot, beta-dot, gamma-dot (abg for short).
     '''
 
-    def __init__(self, times=None, obs_code=None, verbose=False):
+    def __init__(self, times=None, obs_code=None, method='MPC', verbose=False):
         '''
         When object is initialized, either initialize blank object,
         or initialize with an array of times and an obs_code.
@@ -66,13 +66,14 @@ class Transformer():
         '''
         self.times = times
         self.obs_code = obs_code
+        self.method = method
         self.verbose = verbose
         self.abg = None
         self.time0 = None
-        if times and obs_code:
-            self.observer_position = True
+        if times is not None and obs_code:
+            self.observer_relative_vector_ecliptic = self.get_observer_xyz_helio_ecliptic()
         else:
-            self.observer_position = None
+            self.observer_relative_vector_ecliptic = None
 
     def __call__(self, abg, time0, latlon0, wcs=None, verbose=None):
         '''
@@ -87,11 +88,11 @@ class Transformer():
         self.latlon0 = latlon0
         if wcs:
             # Calculate pixel shifts from thetas
-            thetas = self.abg2thetas()
+            thetas = self.abg2theta()
             pixels = self.thetas2pix(thetas, wcs)
             return pixels.T - np.min(pixels, 1)
         # else:
-        return self.abg2thetas()
+        return self.abg2theta()
 
     def abg2theta(self, GM=c.GM_sun.to('au**3/year**2').value):
         '''
@@ -111,7 +112,7 @@ class Transformer():
         # XYZ of observer:
         # flake8: W503
         x_E, y_E, z_E = (self.observer_xyz.T if self.observer_xyz
-                         else self.get_observer_xyz().T)
+                         else self.get_observer_xyz_projected().T)
         num_x = (self.abg[0] + self.abg[3] * dtime
                  + self.abg[2] * grav_x - self.abg[2] * x_E)
         num_y = (self.abg[1] + self.abg[4] * dtime
@@ -145,7 +146,21 @@ class Transformer():
         grav_x, grav_y, grav_z = 0, 0, 0.5 * acc_z * dtime ** 2
         return grav_x, grav_y, grav_z
 
-    def get_observer_xyz(self):
+    def get_observer_xyz_helio_ecliptic(self):
+        '''
+        X_E(t) vector in the heliocentric ecliptic frame
+        Calculates the locations of the observer relative to the reference,
+        in the heliocentric ecliptic frame.
+        '''
+        # Observer's heliocentric ecliptic location at all times.
+        observer_helio_ecliptic = self._observer_heliocentric_ecliptic_XYZ()
+        # Observer's heliocentric ecliptic location at reference times.
+        observer_helio_ecliptic0 = self._observer_heliocentric_ecliptic_XYZ(reference=True)
+        # Observer's ecliptic location relative to the location at the reference time
+        observer_helio_ecliptic_relative = observer_helio_ecliptic - observer_helio_ecliptic0
+        return observer_helio_ecliptic_relative
+
+    def get_observer_xyz_projected(self):
         '''
         X_E(t) vector.
         Calculates the locations of the observer relative to the reference,
