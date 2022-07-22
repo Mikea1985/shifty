@@ -70,10 +70,13 @@ class Transformer():
         self.verbose = verbose
         self.abg = None
         self.time0 = None
+        # if instantiated with times and obs_code, pre-calculate observer position at all times
+        # in heliocentric eclipctic space. This pre-calculation thus only needs to be done once
+        # even if multiple different time0 or abg's want to be used.
         if times is not None and obs_code:
-            self.observer_relative_vector_ecliptic = self.get_observer_xyz_helio_ecliptic()
+            self.observer_helio_ecliptic_xyz = self._observer_heliocentric_ecliptic_XYZ(self.times)
         else:
-            self.observer_relative_vector_ecliptic = None
+            self.observer_helio_ecliptic_xyz = None
 
     def __call__(self, abg, time0, latlon0, wcs=None, verbose=None):
         '''
@@ -86,7 +89,7 @@ class Transformer():
         self.abg = abg
         self.time0 = time0
         self.latlon0 = latlon0
-        if wcs:
+        if wcs is not None:
             # Calculate pixel shifts from thetas
             thetas = self.abg2theta()
             pixels = self.thetas2pix(thetas, wcs)
@@ -108,11 +111,10 @@ class Transformer():
         light_travel_time = self._get_light_travel_times()
         dtime = (self.times - self.time0) * u.day.to(u.yr) - light_travel_time
         # Calculate gravitational effect
-        grav_x, grav_y, grav_z = self._get_gravitaty_vector(dtime, GM)
+        grav_x, grav_y, grav_z = self._get_gravity_vector(dtime, GM)
         # XYZ of observer:
         # flake8: W503
-        x_E, y_E, z_E = (self.observer_xyz.T if self.observer_xyz
-                         else self.get_observer_xyz_projected().T)
+        x_E, y_E, z_E = self.get_observer_xyz_projected().T  # pylint: disable=unpacking-non-sequence
         num_x = (self.abg[0] + self.abg[3] * dtime
                  + self.abg[2] * grav_x - self.abg[2] * x_E)
         num_y = (self.abg[1] + self.abg[4] * dtime
@@ -136,7 +138,7 @@ class Transformer():
         ltts = (1 / self.abg[2] * (u.au / c.c).to(u.yr)).value
         return ltts
 
-    def _get_gravitity_vector(self, dtime, GM=c.GM_sun.to('au**3/year**2').value):
+    def _get_gravity_vector(self, dtime, GM=c.GM_sun.to('au**3/year**2').value):
         '''
         g(t), the gravitational perturbation vector, calculated from equations
         (2), (3) and (4) of B&K 2000.
@@ -146,20 +148,6 @@ class Transformer():
         grav_x, grav_y, grav_z = 0, 0, 0.5 * acc_z * dtime ** 2
         return grav_x, grav_y, grav_z
 
-    def get_observer_xyz_helio_ecliptic(self):
-        '''
-        X_E(t) vector in the heliocentric ecliptic frame
-        Calculates the locations of the observer relative to the reference,
-        in the heliocentric ecliptic frame.
-        '''
-        # Observer's heliocentric ecliptic location at all times.
-        observer_helio_ecliptic = self._observer_heliocentric_ecliptic_XYZ()
-        # Observer's heliocentric ecliptic location at reference times.
-        observer_helio_ecliptic0 = self._observer_heliocentric_ecliptic_XYZ(reference=True)
-        # Observer's ecliptic location relative to the location at the reference time
-        observer_helio_ecliptic_relative = observer_helio_ecliptic - observer_helio_ecliptic0
-        return observer_helio_ecliptic_relative
-
     def get_observer_xyz_projected(self):
         '''
         X_E(t) vector.
@@ -167,28 +155,26 @@ class Transformer():
         in projection coordinate frame.
         '''
         # Observer's heliocentric ecliptic location at all times.
-        observer_helio_ecliptic = self._observer_heliocentric_ecliptic_XYZ()
+        if self.observer_helio_ecliptic_xyz is not None:
+            observer_helio_ecliptic = self.observer_helio_ecliptic_xyz
+        else:
+            observer_helio_ecliptic = self._observer_heliocentric_ecliptic_XYZ(self.times)
         # Observer's heliocentric ecliptic location at reference times.
-        observer_helio_ecliptic0 = self._observer_heliocentric_ecliptic_XYZ(reference=True)
+        observer_helio_ecliptic0 = self._observer_heliocentric_ecliptic_XYZ(self.time0)
         # Observer's ecliptic location relative to the location at the reference time
         observer_helio_ecliptic_relative = observer_helio_ecliptic - observer_helio_ecliptic0
         # Convert observer location to projection coordinate system.
         observer_projected = np.array([xyz_ec_to_proj(*obspos, *self.latlon0)
-                                       for obspos in
-                                       observer_helio_ecliptic_relative])
+                                       for obspos in observer_helio_ecliptic_relative])
         return observer_projected
 
-    def _observer_heliocentric_ecliptic_XYZ(self, reference=False):
+    def _observer_heliocentric_ecliptic_XYZ(self, times):
         '''
         Get the heliocentric ecliptic position of the observer.
         If reference=True, use reference time, otherwise all times.
         '''
-        if reference:
-            args = {'times': self.time0, 'obs_code': self.obs_code,
-                    'verbose': self.verbose}
-        else:
-            args = {'times': self.times, 'obs_code': self.obs_code,
-                    'verbose': self.verbose}
+        args = {'times': times, 'obs_code': self.obs_code,
+                'verbose': self.verbose}
         # Use Horizons if explicitly requested (or if stupid JPL obs_code):
         if (len(self.obs_code) != 3) | (self.method == 'JPL'):
             return _observer_heliocentric_ecliptic_XYZ_from_JPL(**args)
@@ -215,9 +201,9 @@ class Transformer():
         else:  # assume one wcs per image
             pix_list = []
             for i, wcsi in enumerate(wcs):
-                pix_from_abg.append(wcsi.all_world2pix(radec_from_abg[0, i],
-                                                       radec_from_abg[1, i],
-                                                       0))
+                pix_list.append(wcsi.all_world2pix(radec_from_abg[0, i],
+                                                   radec_from_abg[1, i],
+                                                   0))
             pix_from_abg = np.array(pix_list).T[::-1]
         return pix_from_abg
 

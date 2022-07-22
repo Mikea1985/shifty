@@ -415,11 +415,11 @@ class DataHandler():
         --------
         self.shifted_data - data array, updated WCS and header
         '''
-        # Make sure shifts is an array of integers:
-        shifts = np.array(shifts).round(0).astype(int)
         # Make sure shifts are all positive (by subtracting smallest value)
         shifts[:, 0] -= shifts[:, 0].min()
         shifts[:, 1] -= shifts[:, 1].min()
+        # Make sure shifts is an array of integers:
+        shifts = np.array(shifts).round(0).astype(int)
         # Find max shifts, to know how much to pad
         ymax = shifts[:, 0].max()
         xmax = shifts[:, 1].max()
