@@ -124,11 +124,35 @@ class Known(Downloader):  # MA: Why is Downloader a base class here???
                       but for some objects, like natsats, it's neccessary.
 
         '''
-        horizons_query = Horizons(id=object_name, location=obs_code,
-                                  epochs=times, id_type=object_type)
-        horizons_ephem = horizons_query.ephemerides(extra_precision=False)
+        if np.shape(times) <= (50,):  # Also true if times is a single value
+            horizons_query = Horizons(id=object_name, location=obs_code,
+                                      epochs=times, id_type=object_type)
+            try:  # Some horizons query is broken in some versions of astropy
+                horizons_ephem = horizons_query.ephemerides(extra_precision=True)
+            except KeyError:
+                horizons_ephem = horizons_query.ephemerides(extra_precision=False)
+        else:
+            i_time = 50
+            horizons_query = Horizons(id=object_name, location=obs_code,
+                                      epochs=times[:i_time], id_type=object_type)
+            extra_precision = True
+            try:
+                horizons_ephem = horizons_query.ephemerides(extra_precision=extra_precision)
+            except KeyError:
+                extra_precision = False
+                horizons_ephem = horizons_query.ephemerides(extra_precision=extra_precision)
+            while i_time < len(times):
+                i_time_new = i_time + 50
+                h_query = Horizons(id=object_name, location=obs_code,
+                                   epochs=times[i_time:i_time_new],
+                                   id_type=object_type)
+                h_ephem = h_query.ephemerides(extra_precision=extra_precision)
+                for heph in h_ephem:
+                    horizons_ephem.add_row(heph)
+                i_time = i_time_new
         self.RA, self.Dec = np.array([horizons_ephem['RA'],
                                       horizons_ephem['DEC']])
+
 
     def _get_object_XYZ_from_horizons(self, object_name, times,
                                       object_type='smallbody',
