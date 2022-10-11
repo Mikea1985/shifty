@@ -12,9 +12,11 @@
 # -----------------------------------------------------------------------------
 import os
 import sys
+import gc
 from datetime import datetime
 import copy
 import numpy as np
+import copy
 
 from astropy.io import fits
 from astropy import wcs
@@ -206,11 +208,14 @@ class DataEnsemble(Downloader):
         wcscube = []
         headercube = []
         for i, filei in enumerate(self.filename):
+            print(f"Reading image {i}: {filei}", end='\r')
             exti = self.extno if isinstance(self.extno, int) else self.extno[i]
             OneIm = OneImage(filei, exti, verbose, **kwargs)
             datacube.append(OneIm.data)
             wcscube.append(OneIm.WCS)
             headercube.append(OneIm.header)
+        print("")
+        print(f"Read {len(self.filename)} files!")
         self.data = np.array(datacube)
         self.WCS = np.array(wcscube)
         self.header = headercube
@@ -238,7 +243,7 @@ class DataEnsemble(Downloader):
                   'Doing nothing!')
         else:
             for i, dat in enumerate(self.data):
-                print(f"Reprojecting image {i}")
+                print(f"Reprojecting image {i}", end='\r')
                 if i != target:  # Don't reproject the target image, duh!
                     # Do the reprojection
                     reprojecti = wcs_project(CCDData(dat, wcs=self.WCS[i],
@@ -303,27 +308,110 @@ class DataEnsemble(Downloader):
 
             reprojected = []
             for i, dat in enumerate(self.data):
-                print(f"Reprojecting image {i}")
-                if i != target:  # Don't reproject the target image, duh!
-                    # Do the reprojection
-                    reprojecti = wcs_project(CCDData(padded[i], wcs=self.WCS[i],
-                                             unit='adu'), self.WCS[target])
-                    # Append to list
-                    reprojected.append(reprojecti.data)
-                    # Update WCS, both in self.wcs and self.header
-                    self.WCS[i] = self.WCS[target]
-                    # Update WCS, both in self.wcs and self.header
-                    self.WCS[i] = self.WCS[target]
-                    del self.header[i]['CD?_?']  # required for update to work
-                    self.header[i].update(self.WCS[i].to_header(relax=True))
-                    # Add a comment to the header about the reprojection
-                    now = str(datetime.today())[:19]
-                    self.header[i]['COMMENT'] = (f'Data was reprojected to WCS '
-                                                 f'of file {target} at {now}')
-                else:
-                    reprojected.append(padded[i])
-                self.data = np.array(reprojected)
+                print(f"Reprojecting image {i}", end='\r')
+                # Do the reprojection
+                reprojecti = wcs_project(CCDData(padded[i], wcs=self.WCS[i],
+                                         unit='adu'), self.WCS[target])
+                # Append to list
+                reprojected.append(reprojecti.data)
+                # Update WCS, both in self.wcs and self.header
+                self.WCS[i] = self.WCS[target]
+                # Update WCS, both in self.wcs and self.header
+                self.WCS[i] = self.WCS[target]
+                del self.header[i]['CD?_?']  # required for update to work
+                new_wcs_header = self.WCS[i].to_header(relax=True)
+                for key in ['TIMESYS', 'TIMEUNIT', 'MJDREF', 'DATE-OBS',
+                          'MJD-OBS', 'TSTART', 'DATE-END', 'MJD-END',
+                          'TSTOP', 'TELAPSE', 'TIMEDEL', 'TIMEPIXR']:
+                    new_wcs_header.remove(key, ignore_missing=True)
+                del new_wcs_header['???MJD???']
+                del new_wcs_header['???TIME???']
+                del new_wcs_header['???DATE???']
+                self.header[i].update(new_wcs_header)
+                # Add a comment to the header about the reprojection
+                now = str(datetime.today())[:19]
+                self.header[i]['COMMENT'] = (f'Data was reprojected to WCS '
+                                             f'of file {target} at {now}')
+            print("\nDone")
+            self.data = np.array(reprojected)
             self.reprojected = True
+
+
+    def reproject_data4(self, target=0, padmean=False):
+        '''
+        Reprojects each layer of self.data to be aligned, using their WCS.
+        By default aligns everything else with the first image,
+        but this can be changed by setting target.
+        Trying to refactor reproject_data2 to be faster and use less memory.
+
+        inputs:
+        -------
+        self.data, self.WCS, self.header
+        target    - int - Index of the target image to align relative to
+
+        outputs:
+        --------
+        self.data
+        self.wcs
+        self.header
+        self.reprojected = True
+        '''
+        if self.reprojected:
+            print('Data has already been aligned and reprojected! '
+                  'Doing nothing!')
+        else:
+            # Offsets
+            offsetsl = []
+            for i, w in enumerate(self.WCS):
+                offsetsl.append(self.WCS[target].all_world2pix(*w.all_pix2world(0, 0, 0), 0))
+                offsets = np.array(offsetsl).round().astype(int)[:,::-1]
+            # Make sure offsets are all positive (by subtracting smallest value)
+            offsets[:, 0] -= offsets[:, 0].min()
+            offsets[:, 1] -= offsets[:, 1].min()
+            # Find max offset, to know how much to pad
+            ymax = offsets[:, 0].max()
+            xmax = offsets[:, 1].max()
+
+            # Get target WCS, shifted to account for padding pixels.
+            target_wcs = copy.deepcopy(self.WCS[target])
+            target_wcs.wcs.crpix += (offsets[i, 1], offsets[i, 0])
+
+            padded = []
+            for i, dat in enumerate(self.data):
+                pad_value = np.nanmean(dat) if padmean else np.nan  # Mean or NaN
+                pad_size = ((offsets[i, 0], ymax - offsets[i, 0]),  # Size of pad
+                            (offsets[i, 1], xmax - offsets[i, 1]))  # on 4 sides
+                #print(pad_size)
+                # Align the array by adding a padding around the edge
+                paddedi = np.pad(dat, pad_size, constant_values=pad_value)
+                # Update WCS, both in .wcs and .header
+                temporary_wcs = copy.deepcopy(self.WCS[i])
+                temporary_wcs.wcs.crpix += (offsets[i, 1], offsets[i, 0])
+                print(f"Reprojecting image {i}", end='\r')
+                # Do the reprojection
+                #print(target_wcs, temporary_wcs, paddedi)
+                reprojecti = wcs_project(CCDData(paddedi, wcs=temporary_wcs,
+                                         unit='adu'), target_wcs)
+                # Save data array
+                padded.append(reprojecti.data)
+                # Update WCS, both in self.wcs and self.header
+                self.WCS[i] = target_wcs
+                del self.header[i]['CD?_?']  # required for update to work
+                self.header[i].update(self.WCS[i].to_header(relax=True))
+                # Add a comment to the header about the reprojection
+                now = str(datetime.today())[:19]
+                self.header[i]['COMMENT'] = (f'Data padded during alignment'
+                                             f' with other files at {now}')
+                self.header[i]['COMMENT'] = (f'Data was reprojected to WCS '
+                                             f'of file {target} at {now}')
+            print("\nDone")
+            # Update data array and mark as already reprojected
+            self.data = np.array(padded)
+            self.reprojected = True
+            # Clear memory
+            del padded
+            del reprojecti
+            gc.collect()
 
 
 class DataHandler():
@@ -534,11 +622,11 @@ class DataHandler():
 
     def save_stack(self, filename='stack.fits'):
         '''Save a stack to a fits file.'''
-        save_fits(self.stacked_data, filename)
+        save_fits(self.stacked_data, filename, self.verbose)
 
     def save_shifted(self, filename='shift'):
         '''Save the shifted images to fits files.'''
-        save_fits(self.shifted_data, filename)
+        save_fits(self.shifted_data, filename, self.verbose)
 
     def _calculate_shifts_from_known(self, **KnownArgs):
         '''
@@ -578,11 +666,12 @@ class DataHandler():
                                                         K_obj.Dec[0], 0,
                                                         ra_dec_order=True)
             for i in np.arange(len(times)):
-                if self.verbose: print(i, times[i])
+                if self.verbose: print(i, times[i], end='\r')
                 pixi = self.image_data.WCS[i].all_world2pix(K_obj.RA[i],
                                                             K_obj.Dec[i], 0,
                                                             ra_dec_order=True)
-                shifts[i, :] = np.flip(pix0) - np.flip(pixi)
+                #shifts[i, :] = np.flip(pix0) - np.flip(pixi)
+                shifts[i, :] = - np.flip(pixi)
         except wcs.NoConvergence:  # if fail, do basic WCS transform
             pix0 = self.image_data.WCS[0].wcs_world2pix(K_obj.RA[0],
                                                         K_obj.Dec[0], 0,
@@ -591,7 +680,8 @@ class DataHandler():
                 pixi = self.image_data.WCS[i].wcs_world2pix(K_obj.RA[i],
                                                             K_obj.Dec[i], 0,
                                                             ra_dec_order=True)
-                shifts[i, :] = np.flip(pix0) - np.flip(pixi)
+                #shifts[i, :] = np.flip(pix0) - np.flip(pixi)
+                shifts[i, :] = - np.flip(pixi)
 
         return shifts
 
@@ -601,7 +691,7 @@ class DataHandler():
 # No need to over-complicate things.
 # -------------------------------------------------------------------------
 
-def save_fits(DataEnsembleObject, filename='data.fits'):
+def save_fits(DataEnsembleObject, filename='data.fits', verbose=True):
     '''
     Save some data to [a] fits file[s].
 
@@ -619,24 +709,27 @@ def save_fits(DataEnsembleObject, filename='data.fits'):
         filename = filename if '.fits' in filename else filename + '.fits'
         hdu = fits.PrimaryHDU(data=DataEnsembleObject.data,
                               header=DataEnsembleObject.header)
-        print(f'Saving to file {filename}')
+        if verbose:
+            print(f'Saving to file {filename}')
         hdu.writeto(filename, overwrite=True)
     elif len(DataEnsembleObject.data.shape) == 3:
+        nfiles = len(str(len(DataEnsembleObject.data)))
+        print(nfiles)
         for i, data in enumerate(DataEnsembleObject.data):
             filenamei = filename.replace('.fits', '')
-            filenamei += f'_{i:03.0f}.fits'
+            filenamei += f'_{i:0{nfiles}.0f}.fits'
             hdu = fits.PrimaryHDU(data=data,
                                   header=DataEnsembleObject.header[i])
-            print(f'Saving to file {filenamei}')
+            if verbose:
+                print(f'Saving to file {filenamei}', end='\r')
             hdu.writeto(filenamei, overwrite=True)
     else:
         raise ValueError('The input is not a valid DataEnsemble object.')
+    print('\nDone!')
 
-    print('Done!')
 
-
-def readOneImageAndHeader(filename=None, extno=0, verbose=False,
-                          **kwargs):
+def readOneImageAndHeader2(filename=None, extno=0, verbose=False,
+                           **kwargs):
     '''
     Reads in a fits file (or a given extension of one).
     Returns the image data, the header, and a few useful keyword values.
@@ -729,6 +822,230 @@ def readOneImageAndHeader(filename=None, extno=0, verbose=False,
         header = han[extno].header  # Header for the extension
         # Overall header for whole mosaic, etx0:
         header0 = han[0].header  # pylint: disable=E1101 # Pylint stupid errors
+
+    # Use the defined keywords to save the values into key_values.
+    # Search both headers if neccessary (using keyValue)
+    for key, use in header_keywords.items():
+        if verbose:
+            print(key, use)
+        if key in ['NAXIS1', 'NAXIS2']:
+            # Some keywords can have an integer value defined
+            # instead of keyword name
+            key_values[key] = (use if isinstance(use, int) else
+                               int(_find_key_value(header, header0, use)))
+        elif key == 'INSTRUMENT':
+            # INSTRUMENT and FILTER obviously can't be floats,
+            # so use a leading '-' to specify a value to use
+            # instead of a keyword name.
+            key_values[key] = (use[1:] if use[0] == '-'
+                               else _find_key_value(header, header0, use))
+        elif key == 'FILTER':
+            # Filter only wants the first character of the supplied,
+            # not all the junk (telescopes usually put numbers after)
+            key_values[key] = (use[1] if use[0] == '-' else
+                               _find_key_value(header, header0, use)[0])
+        elif key == 'MJD_START':
+            # Sometimes, like for Tess, the MJD of the start isn't given
+            # but can be calculated from the sum of a reference MJD and
+            # the time since that reference. 
+            # A + in the keyword is used to indicate the sum of two keywords.
+            if isinstance(use, float):
+                key_values[key] = use
+            elif isinstance(use, str):
+                uses = use.split('+')
+                key_values[key] = 0.
+                for usei in uses:
+                    if '*' in usei:
+                        multiplier = eval(''.join(usei.split('*')[1:]))
+                        usei = usei.split('*')[0]
+                    else:
+                        multiplier = 1
+                    try:  # see whether the value is just a number:
+                        key_values[key] += float(usei) * multiplier
+                    except(ValueError):
+                        key_values[key] += (float(_find_key_value(header,
+                                                                  header0,
+                                                                  usei))
+                                            * multiplier)
+            else:
+                raise TypeError('MJD_START must be float or string')
+        elif key == 'EXPTIME':
+            # Some stupid telescopes record exposure time in unites 
+            # other than seconds... allow for this.
+            if isinstance(EXPUNIT, str) or isinstance(EXPUNIT, float):
+                timeunit = (86400.0 if EXPUNIT=='d' else
+                            1440.0 if EXPUNIT=='h' else
+                            24.0 if EXPUNIT=='m' else
+                            1.0 if EXPUNIT=='s' else
+                            EXPUNIT)
+            else:
+                raise TypeError('EXPUNIT must be float or string')
+            key_values[key] = timeunit * (use if isinstance(use, float) else
+                                  float(_find_key_value(header, header0, use)))
+        else:
+            # Most keywords can just have a float value defined
+            # instead of keyword name, that's what the if type is about.
+            key_values[key] = (use if isinstance(use, float) else
+                               float(_find_key_value(header, header0, use)))
+        if verbose:
+            print(key_values.keys())
+        header[f'SHIFTY_{key}'] = (key_values[key], header_comments[key])
+        header['COMMENT'] = (f'SHIFTY_{key} added by SHIFTY'
+                             f' at {str(datetime.today())[:19]}')
+        header['COMMENT'] = f'SHIFTY_{key} derived from {use}'
+
+    # Also define the middle of the exposure:
+    key_values['MJD_MID'] = (key_values['MJD_START'] +
+                             key_values['EXPTIME'] / (86400 * 2))
+    header[f'SHIFTY_MJD_MID'] = (key_values['MJD_MID'],
+                                 'MJD at middle of exposure')
+    header['COMMENT'] = (f'SHIFTY_MJD_MID added by SHIFTY'
+                         f' at {str(datetime.today())[:19]}')
+    header['COMMENT'] = (f'SHIFTY_MJD_MID derived from '
+                         f'{header_keywords["MJD_START"]} '
+                         f'and {header_keywords["EXPTIME"]}')
+
+    print('{}\n'.format((key_values)) if verbose else '', end='')
+    return data, header, header0, wcs.WCS(header), header_keywords, key_values
+
+
+def readOneImageAndHeader(filename=None, extno=0, verbose=False,
+                          **kwargs):
+    '''
+    Reads in a fits file (or a given extension of one).
+    Returns the image data, the header, and a few useful keyword values.
+
+    input:
+    ------
+    filename       - str          - valid filepath to one valid fits-file
+    extno          - int          - Extension number of image data
+                                  - (0 if single-extension)
+    verbose        - bool         - Print extra stuff if True
+    EXPTIME        - str OR float - Exposure time in seconds
+                                  - (keyword or value)
+    EXPUNIT        - str OR float - Units on exposure time
+                                  - ('s','m','h','d' or float seconds/unit)
+    MAGZERO        - str OR float - Zeropoint magnitude (keyword or value)
+    MJD_START      - str OR float - MJD at start of exposure
+                                  - (keyword or value)
+    GAIN           - str OR float - Gain value (keyword or value)
+    FILTER         - str          - Filter name (keyword or '-name')
+    NAXIS1         - str OR int   - Number of pixels along axis 1
+    NAXIS2         - str OR int   - Number of pixels along axis 2
+    INSTRUMENT     - str          - Instrument name (keyword)
+
+    A float/integer value can be defined for most keywords,
+    rather than a keyword name; this will use that value
+    rather than searching for the keyword in the headers.
+    INSTRUMENT and FILTER obviously can't be floats/integers,
+    so use a leading '-' to specify a value
+    rather than a keyword name to use.
+
+    output:
+    -------
+    data            - np.array   - the float array of pixel data
+                                 - shape == (NAXIS2, NAXIS1)
+    header          - fits.header.Header - Sort of like a dictionary
+    header0         - fits.header.Header - Sort of like a dictionary
+    WCS             - wcs.wcs.WCS - World Coordinate System plate solution
+    header_keywords - dictionary - A bunch of header keyword names.
+                                 - Needed later at all??? Not sure
+    key_values      - dictionary - A bunch of important values
+
+    Content of key_values:
+    EXPTIME         - float      - Exposure time in seconds
+    MAGZERO         - float      - Zeropoint magnitude
+    MJD_START       - float      - MJD at start of exposure
+    MJD_MID         - float      - MJD at centre of exposure
+    GAIN            - float      - Gain value
+    FILTER          - str        - Filter name
+    NAXIS1          - int        - Number of pixels along axis 1
+    NAXIS2          - int        - Number of pixels along axis 2
+    '''
+
+    # Check whether a filename is supplied.
+    if filename is None:
+        raise TypeError('filename must be supplied!')
+
+    # Define default keyword names
+    header_keywords = {'EXPTIME': 'EXPTIME',      # Exposure time [s]
+                       'MAGZERO': 'MAGZERO',      # Zeropoint mag
+                       'MJD_START': 'MJD-STR',    # MJD at start
+                       'GAIN': 'GAINEFF',         # Gain value
+                       'FILTER': 'FILTER',        # Filter name
+                       'NAXIS1': 'NAXIS1',        # Pixels along axis1
+                       'NAXIS2': 'NAXIS2',        # Pixels along axis2
+                       'INSTRUMENT': 'INSTRUME',  # Instrument name
+                       }
+    header_comments = {'EXPTIME': 'Exposure time [s]',
+                       'MAGZERO': 'Zeropoint magnitude',
+                       'MJD_START': 'MJD at start of exposure',
+                       'GAIN': 'Gain value',
+                       'FILTER': 'Filter letter',
+                       'NAXIS1': 'Pixels along axis1',
+                       'NAXIS2': 'Pixels along axis2',
+                       'INSTRUMENT': 'Instrument name',
+                       }
+    key_values = {}
+    EXPUNIT = 's'
+    xycuts = None
+
+    # Do a loop over the kwargs and see if any header keywords need updating
+    # (because they were supplied)
+    for key, non_default_name in kwargs.items():
+        if key in header_keywords:
+            header_keywords[key] = non_default_name
+        if key=='EXPUNIT':
+            EXPUNIT = non_default_name
+        if key=='xycuts':
+            xycuts = non_default_name
+
+    # Read the file. Do inside a "with ... as ..." to auto close file after
+    with fits.open(filename) as han:
+        data = han[extno].data
+        header = han[extno].header  # Header for the extension
+        # Overall header for whole mosaic, etx0:
+        header0 = han[0].header  # pylint: disable=E1101 # Pylint stupid errors
+
+    if xycuts is not None:
+        xycuts[1] = (xycuts[1] - 1 + header['NAXIS1']) % header['NAXIS1'] + 1
+        xycuts[3] = (xycuts[3] - 1 + header['NAXIS2']) % header['NAXIS2'] + 1
+        if verbose:
+            print(xycuts)
+
+        data = data[xycuts[0]:xycuts[1], xycuts[2]:xycuts[3]]
+        # CRPIX1
+        header['OLD_CRPIX1'] = (header['CRPIX1'], header.comments['CRPIX1'])
+        header['COMMENT'] = (f'OLD_CRPIX1 added by SHIFTY'
+                             f' at {str(datetime.today())[:19]}')
+        header['COMMENT'] = (f'OLD_CRPIX1 contains old value of CRPIX1')
+        header['CRPIX1'] -= xycuts[2]
+        # CRPIX2
+        header['OLD_CRPIX2'] = (header['CRPIX2'], header.comments['CRPIX2'])
+        header['COMMENT'] = (f'OLD_CRPIX2 added by SHIFTY'
+                             f' at {str(datetime.today())[:19]}')
+        header['COMMENT'] = (f'OLD_CRPIX2 contains old value of CRPIX2')
+        header['CRPIX2'] -= xycuts[0]
+        # NAXIS1
+        header['OLD_NAXIS1'] = (header['NAXIS1'],
+                                header.comments['NAXIS1'])
+        header['COMMENT'] = (f'OLD_NAXIS1 added by SHIFTY'
+                             f' at {str(datetime.today())[:19]}')
+        header['COMMENT'] = (f'OLD_NAXIS1 contains old value of NAXIS1')
+        header['NAXIS1'] = xycuts[1] - xycuts[0]
+        header['COMMENT'] = (f'NAXIS1 updated by SHIFTY'
+                             f' at {str(datetime.today())[:19]}')
+        header['COMMENT'] = (f'NAXIS1 adjusted for xycut')
+        # NAXIS2
+        header['OLD_NAXIS2'] = (header['NAXIS2'],
+                                header.comments['NAXIS2'])
+        header['COMMENT'] = (f'OLD_NAXIS2 added by SHIFTY'
+                             f' at {str(datetime.today())[:19]}')
+        header['COMMENT'] = (f'OLD_NAXIS2 contains old value of NAXIS2')
+        header['NAXIS2'] = xycuts[3] - xycuts[2]
+        header['COMMENT'] = (f'NAXIS2 updated by SHIFTY'
+                             f' at {str(datetime.today())[:19]}')
+        header['COMMENT'] = (f'NAXIS2 adjusted for xycut')
 
     # Use the defined keywords to save the values into key_values.
     # Search both headers if neccessary (using keyValue)

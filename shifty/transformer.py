@@ -93,7 +93,9 @@ class Transformer():
             # Calculate pixel shifts from thetas
             thetas = self.abg2theta()
             pixels = self.thetas2pix(thetas, wcs)
-            return pixels.T - np.min(pixels, 1)
+            #return pixels.T - np.min(pixels, 1)
+            # So much nicer if it just returns the expected pixel coordinates
+            return pixels.T
         # else:
         return self.abg2theta()
 
