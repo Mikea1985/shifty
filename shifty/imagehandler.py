@@ -29,7 +29,6 @@ from ccdproc import wcs_project  # , Combiner
 # -----------------------------------------------------------------------------
 sys.path.append(os.path.dirname(os.path.dirname(
                 os.path.realpath(__file__))))
-from shifty.downloader import Downloader
 from shifty.known import Known
 
 
@@ -37,7 +36,7 @@ from shifty.known import Known
 # Various class definitions for *data import * in shifty
 # -----------------------------------------------------------------------------
 
-class OneImage(Downloader):
+class OneImage():
     '''
     (1)Loads a fits-file,
        including data array, WCS, header and select header keywords
@@ -91,12 +90,8 @@ class OneImage(Downloader):
         so use a leading '-' to specify a value
         rather than a keyword name to use.
         '''
-        # - Allow ourselves to use Downloader methods
-        Downloader.__init__(self,)
         # Make readOneImageAndHeader a method even though it doesn't need to be
         self.readOneImageAndHeader = readOneImageAndHeader
-        # - Local directory for saving data
-        self.local_dir = self._fetch_data_directory()
         # Initialize some attributes that will get filled later
         self.key_values = {}       # filled out by loadImageAndHeader
         self.header_keywords = {}  # filled out by loadImageAndHeader
@@ -121,7 +116,7 @@ class OneImage(Downloader):
     # -------------------------------------------------------------------------
 
 
-class DataEnsemble(Downloader):
+class DataEnsemble():
     '''
     (1)Loads a list of fits-files
     (2)Stores image data in a cube array, WCS in an array, headers in an array.
@@ -177,8 +172,6 @@ class DataEnsemble(Downloader):
         hopefully should only ever be useful if attempting to stack images
         from different instruments; so low priority.
         '''
-        # - Allow ourselves to use Downloader methods
-        Downloader.__init__(self,)
         self.filename = filename
         if filename is not None:
             # Set some values

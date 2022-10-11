@@ -21,7 +21,6 @@ from astroquery.jplhorizons import Horizons
 # -----------------------------------------------------------------------------
 sys.path.append(os.path.dirname(os.path.dirname(
                 os.path.realpath(__file__))))
-from shifty.downloader import Downloader
 
 
 # -----------------------------------------------------------------------------
@@ -36,7 +35,7 @@ DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(
 # Various class definitions for *propagating orbits* in shifty
 # -----------------------------------------------------------------------------
 
-class Known(Downloader):  # MA: Why is Downloader a base class here???
+class Known():
     '''
     Class to deal with propagatation of known orbits
 
@@ -60,7 +59,6 @@ class Known(Downloader):  # MA: Why is Downloader a base class here???
     '''
 
     def __init__(self, **kwargs):
-        super().__init__()
         if 'obs_code' in kwargs and 'times' in kwargs and \
            (('object_name' in kwargs) or ('orbit' in kwargs)):
             self.get_known_RADEC(**kwargs)
