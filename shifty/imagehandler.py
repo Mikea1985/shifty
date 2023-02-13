@@ -212,6 +212,7 @@ class DataEnsemble():
         self.data = np.array(datacube)
         self.WCS = np.array(wcscube)
         self.header = headercube
+        print("Done!")
 
     def reproject_data(self, target=0):
         '''
@@ -512,7 +513,9 @@ class DataHandler():
         shifted = []
         for i, dat in enumerate(self.image_data.data):
             if self.verbose:
-                print(f'Shifting image {i} by {shifts[i]}')
+                print(f'Shifting image {i} by {shifts[i]}   ')
+            else:
+                print(f'Shifting image {i} by {shifts[i]}   ', end='\r')
             pad_value = np.nanmean(dat) if padmean else np.nan  # Mean or NaN
             pad_size = ((shifts[i, 0], ymax - shifts[i, 0]),  # Size of pad
                         (shifts[i, 1], xmax - shifts[i, 1]))  # on 4 sides
@@ -602,6 +605,89 @@ class DataHandler():
         else:  # Default
             print(' using mean stacking')
 #            self.stacked_data = combiner.average_combine()  # Slow method
+            self.stacked_data.data = np.nanmean(data, 0)
+        if isinstance(which_WCS, int):
+            wcsidx = which_WCS
+        elif isinstance(which_WCS, str):
+            wcsidx = (0 if which_WCS.lower() == 'first'
+                      else -1 if which_WCS.lower() == 'last'
+                      else int(len(data) / 2))
+        self.stacked_data.WCS = sWCS[wcsidx]
+        if save_to_filename != '':
+            self.save_stack(filename=save_to_filename)
+
+    def stack_subset(self, start_index=None, end_index=None, mask=None,
+                     shifted=False, median_combine=False,
+                     save_to_filename='', which_WCS='middle'):
+        '''
+        Stacks a subset of the shifted data.
+
+        inputs:
+        -------
+        self.data or self.shifted_data
+        start_index       - int            - index of first image to use
+                                             ignored if 'mask' defined
+        end_index         - int            - index of last image to use +1
+                                             ignored if 'mas' defined
+        mask              - boolean array  - boolean array of length equal
+                                             to number of images,
+                                             True = use image,
+                                             False = ignore image.
+        shifted           - boolean        - Whether to use the shifted
+                                           - or plain data
+        median_combine    - boolean        - Use median if True, mean otherwise
+        save_to_filename  - string or None - if string, saves to that file
+        which_WCS         - string or int  - 'first', 'middle', 'last' or int
+                                           - if int, it's used as the index
+                                             (after start_index or masking)
+
+        outputs:
+        --------
+        self.stack
+
+        A median stack is often a little deeper than the mean stack,
+        but it does not preserve photon count in a photometric way.
+        So median stack is good for finding objects, mean best for photometry.
+
+        which_WCS defaults to using the WCS of the middle image.
+        It does not actually matter, though.
+        '''
+        # Check input arguments:
+        if (mask is None) & (start_index is None) & (end_index is None):
+            data = (self.shifted_data.data if shifted
+                    else self.image_data.data)
+            sWCS = (self.shifted_data.WCS if shifted
+                    else self.image_data.WCS)
+        elif (mask is not None):  # masks are the worst for memory usage, FYI!
+            assert len(mask)==len(self.image_data.data),\
+                   "'mask' must be same size as number of images."
+            assert type(mask) in [np.array, list],\
+                   "'mask' must be a list or array."
+            assert np.all([maski in [True, False, 0, 1] for maski in mask]),\
+                   "'mask' elements must be True, False, 0 or 1."
+            imask = np.array(mask).astype(bool)
+            data = (self.shifted_data.data[imask] if shifted
+                    else self.image_data.data[imask])
+            sWCS = (self.shifted_data.WCS[imask] if shifted
+                    else self.image_data.WCS[imask])
+        else:
+            assert type(start_index) in [type(None), int, np.int64],\
+                   "'start_index' must be None or an integer."
+            assert type(end_index) in [type(None), int, np.int64],\
+                   "'end_index' must be None or an integer."
+            if (start_index is not None) & (end_index is not None):
+                assert start_index < end_index,\
+                       "'end_index' must be > 'start_index', or None"
+            data = (self.shifted_data.data[start_index:end_index] if shifted
+                    else self.image_data.data[start_index:end_index])
+            sWCS = (self.shifted_data.WCS[start_index:end_index] if shifted
+                    else self.image_data.WCS[start_index:end_index])
+        print('Combining images', end='')
+        if median_combine:  # slower; only if median is desired.
+            print(' using median stacking.')
+            self.stacked_data.data = np.nanmedian(data, 0)
+        else:  # Default
+            print(' using mean stacking')
             self.stacked_data.data = np.nanmean(data, 0)
         if isinstance(which_WCS, int):
             wcsidx = which_WCS
