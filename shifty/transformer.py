@@ -19,6 +19,7 @@ import numpy as np
 from astropy import units as u
 from astropy import constants as c
 from astropy.time import Time
+from astropy.table import vstack
 
 # -----------------------------------------------------------------------------
 # Any local imports
@@ -227,9 +228,26 @@ def _observer_heliocentric_ecliptic_XYZ_from_JPL(times, obs_code='500',
     times_AP = Time(times, format='jd', scale='utc')
     # convert times to tdb, the time system used by Horizons for vectors.
     times_tdb = times_AP.tdb.value
-    horizons_query = Horizons(id='10', location=obs_code,
-                              epochs=times_tdb, id_type='id')
-    horizons_vector = horizons_query.vectors(refplane='ecliptic')
+    if np.shape(times) <= (50,):  # Also true if times is a single value
+        horizons_query = Horizons(id='10', location=obs_code,
+                                  epochs=times_tdb, id_type='id')
+        horizons_vector = horizons_query.vectors(refplane='ecliptic')
+    else:
+        if verbose:
+            print("Splitting large Horizons query")
+        i_time = 50
+        horizons_query = Horizons(id='10', location=obs_code,
+                                  epochs=times_tdb[:i_time], id_type='id')
+        horizons_vector = horizons_query.vectors(refplane='ecliptic')
+        while i_time < len(times):
+            if verbose:
+                print(i_time)
+            i_time_new = i_time + 50
+            horizons_query = Horizons(id='10', location=obs_code,
+                                      epochs=times_tdb[i_time:i_time_new], id_type='id')
+            horizons_vector_tmp = horizons_query.vectors(refplane='ecliptic')
+            horizons_vector = vstack([horizons_vector, horizons_vector_tmp])
+            i_time = i_time_new
     helio_OBS_ecl = 0 - np.array([horizons_vector['x'], horizons_vector['y'],
                                   horizons_vector['z']]).T
     if verbose:
