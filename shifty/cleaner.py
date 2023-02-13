@@ -19,6 +19,7 @@ import sys
 # import gc
 from datetime import datetime
 import copy
+import tracemalloc
 import numpy as np
 
 from astropy.io import fits
@@ -329,6 +330,7 @@ class DataCleaner():
         InputEnsemble, having been modified directly
         (should take less memory than making a copy to modify)
         '''
+        tracemalloc.start()
         # Offsets
         offsetsl = []
         for i, w in enumerate(InputEnsemble.WCS):
@@ -338,14 +340,16 @@ class DataCleaner():
         xymax = np.max(offsets, 0)
 
         padded = []
-        for i, dat in enumerate(InputEnsemble.data):
+        for i in np.arange(len(InputEnsemble.data)):
             print(f"Aligning and padding image {i}", end='\r')
-            pad_value = np.nanmean(dat) if padmean else np.nan  # Mean or NaN
+            pad_value = (np.nanmean(InputEnsemble.data[i]) if padmean
+                         else np.nan)  # Mean or NaN
             # Size of pad on 4 sides
             pad_size = ((offsets[i, 0], xymax[0] - offsets[i, 0]),
                         (offsets[i, 1], xymax[1] - offsets[i, 1]))
             # Align the array by adding a padding around the edge
-            paddedi = np.pad(dat, pad_size, constant_values=pad_value)
+            paddedi = np.pad(InputEnsemble.data[i], pad_size,
+                             constant_values=pad_value)
             padded.append(paddedi)
             # Update WCS to account for padding, both in .wcs and .header
             InputEnsemble.WCS[i].wcs.crpix += (offsets[i, 1], offsets[i, 0])
@@ -368,7 +372,9 @@ class DataCleaner():
             now = str(datetime.today())[:19]
             InputEnsemble.header[i]['COMMENT'] = (f'Data was alligned to '
                                                   f'integer pixel at {now}')
+        del InputEnsemble.data
         InputEnsemble.data = np.array(padded)
+        del padded
         print("\nDone")
 
     def subtract_background_level(self, InputEnsemble, usemean=False):
@@ -395,7 +401,7 @@ class DataCleaner():
                                                   f'subtracted at {now}')
         print("\nDone")
 
-    def _subtract_local(self, InputEnsemble):
+    def subtract_background_level_better(self, InputEnsemble, usemean=False):
         '''
         Subtract the background level (effectively making the background 0)
 
@@ -408,6 +414,127 @@ class DataCleaner():
         InputEnsemble, having been modified directly
         (should take less memory than making a copy to modify)
         '''
+        for i, dat in enumerate(InputEnsemble.data):
+            print(f"Subtracting background level in image {i}", end='\r')
+            background_value = (np.nanmean(dat) if usemean
+                                else np.nanmedian(dat))
+            std_value = np.nanstd(dat)
+            idx_old = (dat > -np.inf)
+            idx = (np.abs(dat - background_value) < 5 * std_value)
+            j = 0
+            #print(j, background_value, std_value, np.shape(idx), np.shape(dat))
+            while not np.all(idx_old == idx) & (j < 25):
+                background_value = (np.nanmean(dat[idx]) if usemean
+                                    else np.nanmedian(dat[idx]))
+                std_value = np.nanstd(dat[idx])
+                idx_old = idx
+                idx = (np.abs(dat - background_value) < 5 * std_value)
+                j += 1
+                #print(j, background_value, std_value)
+                
+            InputEnsemble.data[i] -= background_value
+            # Add a comment to the header about the subtraction
+            now = str(datetime.today())[:19]
+            InputEnsemble.header[i]['COMMENT'] = (f'Background level '
+                                                  f'subtracted at {now}')
+        print("\nDone")
+
+    def _subtract_overall(self, InputEnsemble, usemean=False):
+        '''
+        Create a template from all of the observations
+        and subtract it from every image.
+        This is the fastest, but least good, template subtraction.
+
+        inputs:
+        -------
+        InputEnsemble - a DataEnsemble object
+        usemean       - bool - Whether to use mean (True)
+                               or median (False, default)
+
+        outputs:
+        --------
+        InputEnsemble, having been modified directly
+        (should take less memory than making a copy to modify)
+        '''
+        print("Creating a universal template from all images.")
+        universal_template = (np.nanmean(InputEnsemble.data, 0) if usemean
+                              else np.nanmedian(InputEnsemble.data, 0))
+        print("Subtracting template")
+        InputEnsemble.data -= universal_template
+        for i in np.arange(len(InputEnsemble.data)):
+            # Add a comment to the header about the subtraction
+            now = str(datetime.today())[:19]
+            InputEnsemble.header[i]['COMMENT'] = (f'Template '
+                                                  f'subtracted at {now}')
+        print("\nDone")
+
+    def _subtract_local_average(self, InputEnsemble, usemean=False, nobs=100):
+        '''
+        Create a 'local' (temporally) template from the closest nobs
+        observations on each side of each image, and subtract it.
+
+        inputs:
+        -------
+        InputEnsemble - a DataEnsemble object
+        usemean       - bool - Whether to use mean (True)
+                               or median (False, default)
+        nobs          - int  - number of observations before and after
+
+        outputs:
+        --------
+        InputEnsemble, having been modified directly
+        (should take less memory than making a copy to modify)
+        '''
+        original_data = copy.deepcopy(InputEnsemble.data)
+        for i in np.arange(len(InputEnsemble.data)):
+            print(f"Subtracting template from image {i}", end='\r')
+            i_min = np.max([0, i - nobs])
+            i_max = np.min([i + nobs, len(original_data)])
+            InputEnsemble.data[i] -= (np.nanmean(original_data[i_min:i_max], 0)
+                                      if usemean
+                                      else np.nanmedian(original_data[i_min:i_max], 0))
+            # Add a comment to the header about the subtraction
+            now = str(datetime.today())[:19]
+            InputEnsemble.header[i]['COMMENT'] = (f'Template '
+                                                  f'subtracted at {now}')
+        print("\nDone")
+
+    def _subtract_donut(self, InputEnsemble, usemean=False, nouter=100, ninner=25):
+        '''
+        Create a 'local' (temporally) template from the closest nobs
+        observations on each side of each image, and subtract it.
+
+        inputs:
+        -------
+        InputEnsemble - a DataEnsemble object
+        usemean       - bool - Whether to use mean (True)
+                               or median (False, default)
+        nouter          - int  - number of observations before and after
+        ninner          - int  - number of observations before and after
+
+        outputs:
+        --------
+        InputEnsemble, having been modified directly
+        (should take less memory than making a copy to modify)
+        '''
+        original_data = copy.deepcopy(InputEnsemble.data)
+        nobs = len(original_data)
+        for i in np.arange(len(InputEnsemble.data)):
+            print(f"Subtracting template from image {i}", end='\r')
+            i_min = np.max([0, i - nouter])
+            i_mid1 = np.max([0, i - ninner])
+            i_mid2 = np.min([i + ninner, nobs])
+            i_max = np.min([i + nouter, nobs])
+            use_data = (list(original_data[i_min:i_mid1])
+                        + list(original_data[i_mid2:i_max]))
+            donut_template = (np.mean(use_data, 0) if usemean
+                              else np.median(use_data, 0))
+            InputEnsemble.data[i] -= donut_template
+            # Add a comment to the header about the subtraction
+            now = str(datetime.today())[:19]
+            InputEnsemble.header[i]['COMMENT'] = (f'Template '
+                                                  f'subtracted at {now}')
+        print("\nDone")
 
     def save_cleaned(self, filename='clean'):
         '''Save the shifted images to fits files.'''
