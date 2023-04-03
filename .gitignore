@@ -58,6 +58,7 @@ Thumbs.db
 *Copy*
 *Junk*
 *junk*
+*.cat
 
 # VIm swap files
 *.swp

@@ -420,15 +420,15 @@ class DataCleaner():
                                 else np.nanmedian(dat))
             std_value = np.nanstd(dat)
             idx_old = (dat > -np.inf)
-            idx = (np.abs(dat - background_value) < 5 * std_value)
+            idx = [np.abs(dat - background_value) < 5 * std_value]
             j = 0
-            #print(j, background_value, std_value, np.shape(idx), np.shape(dat))
+            #print(j, background_value, std_value)
             while not np.all(idx_old == idx) & (j < 25):
                 background_value = (np.nanmean(dat[idx]) if usemean
                                     else np.nanmedian(dat[idx]))
                 std_value = np.nanstd(dat[idx])
                 idx_old = idx
-                idx = (np.abs(dat - background_value) < 5 * std_value)
+                idx = np.abs(dat - background_value) < 5 * std_value
                 j += 1
                 #print(j, background_value, std_value)
                 
@@ -438,6 +438,54 @@ class DataCleaner():
             InputEnsemble.header[i]['COMMENT'] = (f'Background level '
                                                   f'subtracted at {now}')
         print("\nDone")
+
+    def mask_outliers(self, InputEnsemble, sigma_cut_overall = 5, sigma_cut_image = 5,
+                      threshold_outlier_pixels=5):
+        '''
+        Mask outlier pixels.
+        
+        inputs:
+        -------
+        sigma_cut_overall        - int - Mask pixels above/below this many times
+                                         the overall (all images) sigma
+        sigma_cut_image          - int - Mask pixels above/below this many times
+                                         the single image sigma
+        threshold_outlier_pixels - int - Maximum number of outlier pixels allowed
+                                         (ie. loop until no image has more than
+                                          this number of outliers)
+        '''
+        #data = self.cleaned_data.data
+        data = InputEnsemble.data
+        for i, d in enumerate(data):
+            data[i] -= np.nanmedian(d)
+
+        std_all = np.nanstd(data)
+        idx_all = ((data<-5*std_all) | (data>5*std_all))
+        n_outliers = np.sum(np.sum(idx_all, 2), 1)
+        j = 0
+        while not np.all(n_outliers <= threshold_outlier_pixels):
+            print(j, std_all, np.max(n_outliers),
+                  np.sum(n_outliers > threshold_outlier_pixels))
+            for i, d in enumerate(data):
+                std_d = np.nanstd(d)
+                idx = ((d < -sigma_cut_overall * std_all) |
+                       (d > sigma_cut_overall * std_all) |
+                       (d < - sigma_cut_image * std_d) |
+                       (d > sigma_cut_image * std_d))
+                data[i][idx] = np.nan
+                data[i] -= np.nanmedian(data[i])
+                d = data[i]
+                std_d = np.nanstd(d)
+                idx = ((d < -sigma_cut_overall * std_all) |
+                       (d > sigma_cut_overall * std_all) |
+                       (d < - sigma_cut_image * std_d) |
+                       (d > sigma_cut_image * std_d))
+                n_outliers[i] = np.sum(idx)
+            std_all = np.nanstd(data)
+            j += 1
+        print(j, std_all, np.max(n_outliers),
+              np.sum(n_outliers > threshold_outlier_pixels))
+        InputEnsemble.data = data
 
     def _subtract_overall(self, InputEnsemble, usemean=False):
         '''

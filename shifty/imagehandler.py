@@ -596,6 +596,7 @@ class DataHandler():
         print('Combining images', end='')
         data = self.shifted_data.data if shifted else self.image_data.data
         sWCS = self.shifted_data.WCS if shifted else self.image_data.WCS
+        sheader = self.shifted_data.header if shifted else self.image_data.header
         # This method is much slower (factor 10-40) for some reason:
 #        combiner = Combiner([CCDData(dati, unit='adu') for dati in data])
         if median_combine:  # slower; only if median is desired.
@@ -613,6 +614,7 @@ class DataHandler():
                       else -1 if which_WCS.lower() == 'last'
                       else int(len(data) / 2))
         self.stacked_data.WCS = sWCS[wcsidx]
+        self.stacked_data.header = sheader[wcsidx]
         if save_to_filename != '':
             self.save_stack(filename=save_to_filename)
 
