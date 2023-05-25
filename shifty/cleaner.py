@@ -53,8 +53,8 @@ class DataCleaner():
     template_subtract
     _subtract_provided_template
     _subtract_overall
-    _subtract_local
-    _subtract_local_but_not_too_local
+    _subtract_local_average
+    _subtract_donut
 
     main public method:
     -------------------
@@ -123,242 +123,50 @@ class DataCleaner():
         self.template_subtracted = False
         # Do some awesome stuff!!!
 
-    def reproject_data_old(self, InputEnsemble, target=0, padmean=False):
-        '''
-        Reprojects each layer of InputEnsemble.data to be aligned, using their WCS.
-        By default aligns everything else with the first image,
-        but this can be changed by setting target.
-
-        inputs:
-        -------
-        InputEnsemble - a DataEnsemble object
-        target        - int  - Index of the target image to align relative to
-        padmean       - bool - Whether to pad with the mean value (True) or
-                               NaN values (False, default).
-
-        outputs:
-        --------
-        InputEnsemble, having been modified directly
-        (should take less memory than making a copy to modify)
-        '''
-        # Offsets
-        offsetsl = []
-        for i, w in enumerate(InputEnsemble.WCS):
-            offsetsl.append(InputEnsemble.WCS[target].all_world2pix(*w.all_pix2world(0, 0, 0), 0))
-        offsets = np.array(offsetsl).round().astype(int)[:, ::-1]
-        # Make sure offsets are all positive (by subtracting smallest value)
-        offsets[:, 0] -= offsets[:, 0].min()
-        offsets[:, 1] -= offsets[:, 1].min()
-        # Find max offset, to know how much to pad
-        ymax = offsets[:, 0].max()
-        xmax = offsets[:, 1].max()
-
-        padded = []
-        for i, dat in enumerate(InputEnsemble.data):
-            pad_value = np.nanmean(dat) if padmean else np.nan  # Mean or NaN
-            pad_size = ((offsets[i, 0], ymax - offsets[i, 0]),  # Size of pad
-                        (offsets[i, 1], xmax - offsets[i, 1]))  # on 4 sides
-            # Align the array by adding a padding around the edge
-            paddedi = np.pad(dat, pad_size, constant_values=pad_value)
-            padded.append(paddedi)
-            # Update WCS, both in .wcs and .header
-            InputEnsemble.WCS[i].wcs.crpix += (offsets[i, 1], offsets[i, 0])
-
-        reprojected = []
-        for i, dat in enumerate(InputEnsemble.data):
-            print(f"Reprojecting image {i}", end='\r')
-            # Do the reprojection
-            reprojecti = wcs_project(CCDData(padded[i], wcs=InputEnsemble.WCS[i],
-                                     unit='adu'), InputEnsemble.WCS[target])
-            # Append to list
-            reprojected.append(reprojecti.data)
-            # Update WCS, both in InputEnsemble.wcs and InputEnsemble.header
-            InputEnsemble.WCS[i] = InputEnsemble.WCS[target]
-            del InputEnsemble.header[i]['CD?_?']  # required for update to work
-            # Required to display correctly in ds9:
-            InputEnsemble.header[i].remove('DATASEC', ignore_missing=True)
-            new_wcs_header = InputEnsemble.WCS[i].to_header(relax=True)
-            for key in ['TIMESYS', 'TIMEUNIT', 'MJDREF', 'DATE-OBS',
-                        'MJD-OBS', 'TSTART', 'DATE-END', 'MJD-END',
-                        'TSTOP', 'TELAPSE', 'TIMEDEL', 'TIMEPIXR']:
-                new_wcs_header.remove(key, ignore_missing=True)
-            del new_wcs_header['???MJD???']
-            del new_wcs_header['???TIME???']
-            del new_wcs_header['???DATE???']
-            InputEnsemble.header[i].update(new_wcs_header)
-            # Add a comment to the header about the reprojection
-            now = str(datetime.today())[:19]
-            InputEnsemble.header[i]['COMMENT'] = (f'Data was reprojected to WCS '
-                                                  f'of file {target} at {now}')
-        print("\nDone")
-        InputEnsemble.data = np.array(reprojected)
-        # ??? Having a separate array like this means we're taking up twice
-        # the memory for the data. I wonder whether we can refactor this
-        # to edit the raw data array directly. ???
-
-    def reproject_data_old2(self, InputEnsemble, target=0, padmean=False):
-        '''
-        Reprojects each layer of InputEnsemble.data to be aligned, using their WCS.
-        By default aligns everything else with the first image,
-        but this can be changed by setting target.
-
-        inputs:
-        -------
-        InputEnsemble - a DataEnsemble object
-        target        - int  - Index of the target image to align relative to
-        padmean       - bool - Whether to pad with the mean value (True) or
-                               NaN values (False, default).
-
-        outputs:
-        --------
-        InputEnsemble, having been modified directly
-        (should take less memory than making a copy to modify)
-
-        This was an attempt to improve reproject_old to use less memory.
-        This does use less memory, but it only works if the array size is
-        does not change, ie. the padding is 0 pixels... So no good.
-        '''
-        # Offsets
-        offsetsl = []
-        for i, w in enumerate(InputEnsemble.WCS):
-            offsetsl.append(InputEnsemble.WCS[target].all_world2pix(*w.all_pix2world(0, 0, 0), 0))
-        offsets = np.array(offsetsl).round().astype(int)[:, ::-1]
-        # Make sure offsets are all positive (by subtracting smallest value)
-        offsets[:, 0] -= offsets[:, 0].min()
-        offsets[:, 1] -= offsets[:, 1].min()
-        # Find max offset, to know how much to pad
-        ymax = offsets[:, 0].max()
-        xmax = offsets[:, 1].max()
-
-        padded = []
-        for i, dat in enumerate(InputEnsemble.data):
-            pad_value = np.nanmean(dat) if padmean else np.nan  # Mean or NaN
-            pad_size = ((offsets[i, 0], ymax - offsets[i, 0]),  # Size of pad
-                        (offsets[i, 1], xmax - offsets[i, 1]))  # on 4 sides
-            # Align the array by adding a padding around the edge
-            paddedi = np.pad(dat, pad_size, constant_values=pad_value)
-            padded.append(paddedi)
-            # Update WCS, both in .wcs and .header
-            InputEnsemble.WCS[i].wcs.crpix += (offsets[i, 1], offsets[i, 0])
-
-        for i, dat in enumerate(InputEnsemble.data):
-            print(f"Reprojecting image {i}", end='\r')
-            # Do the reprojection
-            reprojecti = wcs_project(CCDData(padded[i], wcs=InputEnsemble.WCS[i],
-                                     unit='adu'), InputEnsemble.WCS[target])
-            # Append to list
-            InputEnsemble.data[i] = reprojecti.data
-            # Oh right, that doesn't work if the array changes size...
-            # Update WCS, both in InputEnsemble.wcs and InputEnsemble.header
-            InputEnsemble.WCS[i] = InputEnsemble.WCS[target]
-            del InputEnsemble.header[i]['CD?_?']  # required for update to work
-            # Required to display correctly in ds9:
-            InputEnsemble.header[i].remove('DATASEC', ignore_missing=True)
-            new_wcs_header = InputEnsemble.WCS[i].to_header(relax=True)
-            for key in ['TIMESYS', 'TIMEUNIT', 'MJDREF', 'DATE-OBS',
-                        'MJD-OBS', 'TSTART', 'DATE-END', 'MJD-END',
-                        'TSTOP', 'TELAPSE', 'TIMEDEL', 'TIMEPIXR']:
-                new_wcs_header.remove(key, ignore_missing=True)
-            del new_wcs_header['???MJD???']
-            del new_wcs_header['???TIME???']
-            del new_wcs_header['???DATE???']
-            InputEnsemble.header[i].update(new_wcs_header)
-            # Add a comment to the header about the reprojection
-            now = str(datetime.today())[:19]
-            InputEnsemble.header[i]['COMMENT'] = (f'Data was reprojected to WCS '
-                                                  f'of file {target} at {now}')
-        print("\nDone")
-
-    def reproject_data(self, InputEnsemble, target=0, padmean=False):
-        '''
-        Reprojects each layer of InputEnsemble.data to be aligned, using their WCS.
-        By default aligns everything else with the first image,
-        but this can be changed by setting target.
-
-        inputs:
-        -------
-        InputEnsemble - a DataEnsemble object
-        target        - int  - Index of the target image to align relative to
-        padmean       - bool - Whether to pad with the mean value (True) or
-                               NaN values (False, default).
-
-        outputs:
-        --------
-        InputEnsemble, having been modified directly
-        (should take less memory than making a copy to modify)
-        '''
-        # Do rough pixel alignment and padding.
-        self.rough_align(InputEnsemble, target, padmean)
-
-        for i, wcsi in enumerate(InputEnsemble.WCS):
-            print(f"Reprojecting image {i}", end='\r')
-            # Do the reprojection
-            InputEnsemble.data[i] = wcs_project(CCDData(InputEnsemble.data[i],
-                                                        wcs=wcsi, unit='adu'),
-                                                InputEnsemble.WCS[target]).data
-            # Update WCS, both in InputEnsemble.wcs and InputEnsemble.header
-            InputEnsemble.WCS[i] = InputEnsemble.WCS[target]
-            del InputEnsemble.header[i]['CD?_?']  # required for update to work
-            new_wcs_header = InputEnsemble.WCS[i].to_header(relax=True)
-            for key in ['TIMESYS', 'TIMEUNIT', 'MJDREF', 'DATE-OBS',
-                        'MJD-OBS', 'TSTART', 'DATE-END', 'MJD-END',
-                        'TSTOP', 'TELAPSE', 'TIMEDEL', 'TIMEPIXR']:
-                new_wcs_header.remove(key, ignore_missing=True)
-            del new_wcs_header['???MJD???']
-            del new_wcs_header['???TIME???']
-            del new_wcs_header['???DATE???']
-            InputEnsemble.header[i].update(new_wcs_header)
-            # Add a comment to the header about the reprojection
-            now = str(datetime.today())[:19]
-            InputEnsemble.header[i]['COMMENT'] = (f'Data was reprojected to WCS '
-                                                  f'of file {target} at {now}')
-        print("\nDone")
-
-    def rough_align(self, InputEnsemble, target=0, padmean=False):
+    def rough_align(self, target=0, padmean=False):
         '''
         Aligns images to integer pixel accuracy.
 
         inputs:
         -------
-        InputEnsemble - a DataEnsemble object
         target        - int  - Index of the target image to align relative to
         padmean       - bool - Whether to pad with the mean value (True) or
                                NaN values (False, default).
 
         outputs:
         --------
-        InputEnsemble, having been modified directly
+        self.cleaned_data, having been modified directly
         (should take less memory than making a copy to modify)
         '''
         tracemalloc.start()
         # Offsets
         offsetsl = []
-        for i, w in enumerate(InputEnsemble.WCS):
-            offsetsl.append(InputEnsemble.WCS[target].all_world2pix(*w.all_pix2world(0, 0, 0), 0))
+        for i, w in enumerate(self.cleaned_data.WCS):
+            offsetsl.append(self.cleaned_data.WCS[target].all_world2pix(*w.all_pix2world(0, 0, 0), 0))
         offsets = np.array(offsetsl).round().astype(int)[:, ::-1]
         offsets -= offsets.min(0)
         xymax = np.max(offsets, 0)
 
         padded = []
-        for i in np.arange(len(InputEnsemble.data)):
+        for i in np.arange(len(self.cleaned_data.data)):
             print(f"Aligning and padding image {i}", end='\r')
-            pad_value = (np.nanmean(InputEnsemble.data[i]) if padmean
+            pad_value = (np.nanmean(self.cleaned_data.data[i]) if padmean
                          else np.nan)  # Mean or NaN
             # Size of pad on 4 sides
             pad_size = ((offsets[i, 0], xymax[0] - offsets[i, 0]),
                         (offsets[i, 1], xymax[1] - offsets[i, 1]))
             # Align the array by adding a padding around the edge
-            paddedi = np.pad(InputEnsemble.data[i], pad_size,
+            paddedi = np.pad(self.cleaned_data.data[i], pad_size,
                              constant_values=pad_value)
             padded.append(paddedi)
             # Update WCS to account for padding, both in .wcs and .header
-            InputEnsemble.WCS[i].wcs.crpix += (offsets[i, 1], offsets[i, 0])
+            self.cleaned_data.WCS[i].wcs.crpix += (offsets[i, 1], offsets[i, 0])
             # Update header
-            del InputEnsemble.header[i]['CD?_?']  # required for update to work
+            del self.cleaned_data.header[i]['CD?_?']  # required for update to work
             # Required to display correctly in ds9:
-            InputEnsemble.header[i].remove('DATASEC', ignore_missing=True)
+            self.cleaned_data.header[i].remove('DATASEC', ignore_missing=True)
             # Make new header:
-            new_wcs_header = InputEnsemble.WCS[i].to_header(relax=True)
+            new_wcs_header = self.cleaned_data.WCS[i].to_header(relax=True)
             # Don't change things that aren't WCP related.
             for key in ['TIMESYS', 'TIMEUNIT', 'MJDREF', 'DATE-OBS',
                         'MJD-OBS', 'TSTART', 'DATE-END', 'MJD-END',
@@ -367,60 +175,83 @@ class DataCleaner():
             del new_wcs_header['???MJD???']
             del new_wcs_header['???TIME???']
             del new_wcs_header['???DATE???']
-            InputEnsemble.header[i].update(new_wcs_header)
+            self.cleaned_data.header[i].update(new_wcs_header)
             # Add a comment to the header about the reprojection
             now = str(datetime.today())[:19]
-            InputEnsemble.header[i]['COMMENT'] = (f'Data was alligned to '
+            self.cleaned_data.header[i]['COMMENT'] = (f'Data was alligned to '
                                                   f'integer pixel at {now}')
-        del InputEnsemble.data
-        InputEnsemble.data = np.array(padded)
+        del self.cleaned_data.data
+        self.cleaned_data.data = np.array(padded)
         del padded
         print("\nDone")
 
-    def subtract_background_level(self, InputEnsemble, usemean=False):
+    def reproject_data(self, target=0, padmean=False):
         '''
-        Subtract the background level (effectively making the background 0)
+        Reprojects each layer of self.cleaned_data.data to be aligned,
+        using their WCS.
+        By default aligns everything else with the first image,
+        but this can be changed by setting target.
 
         inputs:
         -------
-        InputEnsemble - a DataEnsemble object
+        target        - int  - Index of the target image to align relative to
+        padmean       - bool - Whether to pad with the mean value (True) or
+                               NaN values (False, default).
 
         outputs:
         --------
-        InputEnsemble, having been modified directly
+        self.cleaned_data, having been modified directly
         (should take less memory than making a copy to modify)
         '''
-        for i, dat in enumerate(InputEnsemble.data):
-            print(f"Subtracting background level in image {i}", end='\r')
-            background_value = (np.nanmean(dat) if usemean
-                                else np.nanmedian(dat))
-            InputEnsemble.data[i] -= background_value
-            # Add a comment to the header about the subtraction
+        # Do rough pixel alignment and padding.
+        self.rough_align(target, padmean)
+
+        for i, wcsi in enumerate(self.cleaned_data.WCS):
+            print(f"Reprojecting image {i}", end='\r')
+            # Do the reprojection
+            self.cleaned_data.data[i] = wcs_project(CCDData(self.cleaned_data.data[i],
+                                                            wcs=wcsi, unit='adu'),
+                                                    self.cleaned_data.WCS[target]).data
+            # Update WCS, both in self.cleaned_data.wcs and self.cleaned_data.header
+            self.cleaned_data.WCS[i] = self.cleaned_data.WCS[target]
+            del self.cleaned_data.header[i]['CD?_?']  # required for update to work
+            new_wcs_header = self.cleaned_data.WCS[i].to_header(relax=True)
+            for key in ['TIMESYS', 'TIMEUNIT', 'MJDREF', 'DATE-OBS',
+                        'MJD-OBS', 'TSTART', 'DATE-END', 'MJD-END',
+                        'TSTOP', 'TELAPSE', 'TIMEDEL', 'TIMEPIXR']:
+                new_wcs_header.remove(key, ignore_missing=True)
+            del new_wcs_header['???MJD???']
+            del new_wcs_header['???TIME???']
+            del new_wcs_header['???DATE???']
+            self.cleaned_data.header[i].update(new_wcs_header)
+            # Add a comment to the header about the reprojection
             now = str(datetime.today())[:19]
-            InputEnsemble.header[i]['COMMENT'] = (f'Background level '
-                                                  f'subtracted at {now}')
+            self.cleaned_data.header[i]['COMMENT'] = (f'Data was reprojected to WCS '
+                                                  f'of file {target} at {now}')
         print("\nDone")
 
-    def subtract_background_level_better(self, InputEnsemble, usemean=False):
+    def subtract_background_level(self, usemean=False):
         '''
         Subtract the background level (effectively making the background 0)
 
         inputs:
         -------
-        InputEnsemble - a DataEnsemble object
+        usemean - Bool - use mean (True) instead of median (False)
+                         Mean is faster, median is better.
+                         Default is False
 
         outputs:
         --------
-        InputEnsemble, having been modified directly
+        self.cleaned_data, having been modified directly
         (should take less memory than making a copy to modify)
         '''
-        for i, dat in enumerate(InputEnsemble.data):
+        for i, dat in enumerate(self.cleaned_data.data):
             print(f"Subtracting background level in image {i}", end='\r')
             background_value = (np.nanmean(dat) if usemean
                                 else np.nanmedian(dat))
             std_value = np.nanstd(dat)
             idx_old = (dat > -np.inf)
-            idx = [np.abs(dat - background_value) < 5 * std_value]
+            idx = np.abs(dat - background_value) < 5 * std_value
             j = 0
             #print(j, background_value, std_value)
             while not np.all(idx_old == idx) & (j < 25):
@@ -432,14 +263,35 @@ class DataCleaner():
                 j += 1
                 #print(j, background_value, std_value)
                 
-            InputEnsemble.data[i] -= background_value
+            self.cleaned_data.data[i] -= background_value
             # Add a comment to the header about the subtraction
             now = str(datetime.today())[:19]
-            InputEnsemble.header[i]['COMMENT'] = (f'Background level '
+            self.cleaned_data.header[i]['COMMENT'] = (f'Background level '
                                                   f'subtracted at {now}')
         print("\nDone")
 
-    def mask_outliers(self, InputEnsemble, sigma_cut_overall = 5, sigma_cut_image = 5,
+    def mask_bright_sources(self, threshold=20000., radius=1):
+        '''
+        Mask pixels brighter than <threshold> as well as pixels within <radius>.
+
+        inputs:
+        -------
+        threshold - int or float - Threshold above which to mask
+        radius    - int or float - Radius around masked pixels to also mask 
+        '''
+        mean_stack = np.nanmean(self.cleaned_data.data, 0)
+        high_pixels_index = np.argwhere(mean_stack > threshold)
+        neg_lim = int(np.floor(-radius))
+        pos_lim = int(np.ceil(radius+1))
+        for hp_idx in high_pixels_index:
+            for yi in np.arange(neg_lim, pos_lim):
+                for xi in np.arange(neg_lim, pos_lim):
+                    if (yi**2 + xi**2) <= radius**2:
+                        yii = hp_idx[0] + yi
+                        xii = hp_idx[1] + xi
+                        self.cleaned_data.data[:, yii, xii] = np.nan
+
+    def mask_outliers(self, sigma_cut_overall = 5, sigma_cut_image = 5,
                       threshold_outlier_pixels=5):
         '''
         Mask outlier pixels.
@@ -454,8 +306,7 @@ class DataCleaner():
                                          (ie. loop until no image has more than
                                           this number of outliers)
         '''
-        #data = self.cleaned_data.data
-        data = InputEnsemble.data
+        data = self.cleaned_data.data
         for i, d in enumerate(data):
             data[i] -= np.nanmedian(d)
 
@@ -485,9 +336,54 @@ class DataCleaner():
             j += 1
         print(j, std_all, np.max(n_outliers),
               np.sum(n_outliers > threshold_outlier_pixels))
-        InputEnsemble.data = data
+        self.cleaned_data.data = data
 
-    def _subtract_overall(self, InputEnsemble, usemean=False):
+    def template_subtract(self, template_type=None,
+                          usemean=False, nobs=100, ninner=25, nouter=100,
+                          template_array=None):
+        '''
+        Subtract a template from each image. 
+
+        inputs:
+        -------
+        template_type - str - 'mean', 'median', 'local', 'donut', 'array'
+
+        The following keywords are only used for certain template_types:
+        if 'local':
+        nobs    - int  - number of observations on each side to use
+        usemean - bool - Use mean (True) or median (False)
+
+        if 'donut':
+        ninner  - int  - inner radius of 1D annulus.
+                         number of observations on each side to _not_ use
+                         (size of hole)
+        nouter  - int  - outer radius of 1D annulus.
+                         number of observations on each side
+                         out to which used area extends.
+        usemean - bool - Use mean (True) or median (False)
+ 
+        if 'array':
+        template_array - array - 2D array of same shape as an individual frame,
+                                 or 3D array shape of whole data cube.
+        '''
+        valid_types = ['mean', 'median', 'local', 'donut', 'doughnut', 'array']
+        if template_type not in valid_types:
+            raise ValueError(f'template_type must be in {valid_types}')
+        elif template_type=='mean':
+            self._subtract_overall(usemean=True)
+        elif template_type=='median':
+            self._subtract_overall(usemean=False)
+        elif template_type=='local':
+            self._subtract_local_average(usemean=usemean, nobs=nobs)
+        elif template_type in ['donut', 'doughnut']:
+            self._subtract_donut(usemean=usemean, ninner=ninner, nouter=nouter)
+        elif (template_type=='template_array') & (template_array is not None):
+            self._subtract_user_defined_array(template_array=template_array)
+        else:
+            raise NotImplementedError('Code should never reach this point.'
+                                      'You found a bug! Please report.')
+
+    def _subtract_overall(self, usemean=False):
         '''
         Create a template from all of the observations
         and subtract it from every image.
@@ -495,66 +391,65 @@ class DataCleaner():
 
         inputs:
         -------
-        InputEnsemble - a DataEnsemble object
         usemean       - bool - Whether to use mean (True)
                                or median (False, default)
 
         outputs:
         --------
-        InputEnsemble, having been modified directly
+        self.cleaned_data, having been modified directly
         (should take less memory than making a copy to modify)
         '''
         print("Creating a universal template from all images.")
-        universal_template = (np.nanmean(InputEnsemble.data, 0) if usemean
-                              else np.nanmedian(InputEnsemble.data, 0))
+        universal_template = (np.nanmean(self.cleaned_data.data, 0) if usemean
+                              else np.nanmedian(self.cleaned_data.data, 0))
         print("Subtracting template")
-        InputEnsemble.data -= universal_template
-        for i in np.arange(len(InputEnsemble.data)):
+        self.cleaned_data.data -= universal_template
+        for i in np.arange(len(self.cleaned_data.data)):
             # Add a comment to the header about the subtraction
             now = str(datetime.today())[:19]
-            InputEnsemble.header[i]['COMMENT'] = (f'Template '
+            self.cleaned_data.header[i]['COMMENT'] = (f'Template '
                                                   f'subtracted at {now}')
         print("\nDone")
 
-    def _subtract_local_average(self, InputEnsemble, usemean=False, nobs=100):
+    def _subtract_local_average(self, usemean=False, nobs=100):
         '''
         Create a 'local' (temporally) template from the closest nobs
         observations on each side of each image, and subtract it.
 
         inputs:
         -------
-        InputEnsemble - a DataEnsemble object
         usemean       - bool - Whether to use mean (True)
                                or median (False, default)
         nobs          - int  - number of observations before and after
 
         outputs:
         --------
-        InputEnsemble, having been modified directly
+        self.cleaned_data, having been modified directly
         (should take less memory than making a copy to modify)
         '''
-        original_data = copy.deepcopy(InputEnsemble.data)
-        for i in np.arange(len(InputEnsemble.data)):
+        original_data = copy.deepcopy(self.cleaned_data.data)
+        for i in np.arange(len(self.cleaned_data.data)):
             print(f"Subtracting template from image {i}", end='\r')
             i_min = np.max([0, i - nobs])
             i_max = np.min([i + nobs, len(original_data)])
-            InputEnsemble.data[i] -= (np.nanmean(original_data[i_min:i_max], 0)
+            self.cleaned_data.data[i] -= (np.nanmean(original_data[i_min:i_max], 0)
                                       if usemean
                                       else np.nanmedian(original_data[i_min:i_max], 0))
             # Add a comment to the header about the subtraction
             now = str(datetime.today())[:19]
-            InputEnsemble.header[i]['COMMENT'] = (f'Template '
+            self.cleaned_data.header[i]['COMMENT'] = (f'Template '
                                                   f'subtracted at {now}')
         print("\nDone")
 
-    def _subtract_donut(self, InputEnsemble, usemean=False, nouter=100, ninner=25):
+    def _subtract_donut(self, usemean=False, nouter=100, ninner=25):
         '''
-        Create a 'local' (temporally) template from the closest nobs
-        observations on each side of each image, and subtract it.
+        Create a 'local' (temporally) template from the closest nouter
+        observations on each side of each image, with an ninner hole on each
+        side, and subtract it.
+        This should prevent subtracting the signal from a moving source.
 
         inputs:
         -------
-        InputEnsemble - a DataEnsemble object
         usemean       - bool - Whether to use mean (True)
                                or median (False, default)
         nouter          - int  - number of observations before and after
@@ -562,12 +457,12 @@ class DataCleaner():
 
         outputs:
         --------
-        InputEnsemble, having been modified directly
+        self.cleaned_data, having been modified directly
         (should take less memory than making a copy to modify)
         '''
-        original_data = copy.deepcopy(InputEnsemble.data)
+        original_data = copy.deepcopy(self.cleaned_data.data)
         nobs = len(original_data)
-        for i in np.arange(len(InputEnsemble.data)):
+        for i in np.arange(len(self.cleaned_data.data)):
             print(f"Subtracting template from image {i}", end='\r')
             i_min = np.max([0, i - nouter])
             i_mid1 = np.max([0, i - ninner])
@@ -577,12 +472,30 @@ class DataCleaner():
                         + list(original_data[i_mid2:i_max]))
             donut_template = (np.mean(use_data, 0) if usemean
                               else np.median(use_data, 0))
-            InputEnsemble.data[i] -= donut_template
+            self.cleaned_data.data[i] -= donut_template
             # Add a comment to the header about the subtraction
             now = str(datetime.today())[:19]
-            InputEnsemble.header[i]['COMMENT'] = (f'Template '
+            self.cleaned_data.header[i]['COMMENT'] = (f'Template '
                                                   f'subtracted at {now}')
         print("\nDone")
+
+    def _subtract_user_defined_array(self, template_array):
+        '''
+        Create a 'local' (temporally) template from the closest nouter
+        observations on each side of each image, with an ninner hole on each
+        side, and subtract it.
+        This should prevent subtracting the signal from a moving source.
+
+        inputs:
+        -------
+        template_array - array - 2D array of same shape as an individual frame,
+                                 or 3D array shape of whole data cube.
+        outputs:
+        --------
+        self.cleaned_data, having been modified directly
+        (should take less memory than making a copy to modify)
+        '''
+        self.cleaned_data.data -= template_array
 
     def save_cleaned(self, filename='clean'):
         '''Save the shifted images to fits files.'''
