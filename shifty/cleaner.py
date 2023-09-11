@@ -50,6 +50,8 @@ class DataCleaner():
     --------
     reproject_data
     subtract_background_level
+    _subtract_average_background_level
+    _subtract_sep_background_level
     template_subtract
     _subtract_provided_template
     _subtract_overall
@@ -230,7 +232,63 @@ class DataCleaner():
                                                   f'of file {target} at {now}')
         print("\nDone")
 
-    def subtract_background_level(self, usemean=False):
+    def subtract_background_level(self, mode=None):
+        '''
+        Subtract the background level (effectively making the background 0).
+
+        inputs:
+        -------
+        mode - str - 'mean', 'median', 'sep' or 'source_extractor'
+                      'sep' and 'source_extractor' are synonymous.
+
+        outputs:
+        --------
+        self.cleaned_data, having been modified directly
+        (should take less memory than making a copy to modify)
+
+        mode = 'source_extractor' uses the 'sep' package to get the background.
+        This allows a variation of the background accross the field, rather than just 
+        subtracting a single value.
+        '''
+        if mode=='mean':
+            self._subtract_average_background_level(usemean=True)
+        elif mode=='median':
+            self._subtract_average_background_level(usemean=True)
+        elif mode in ['sep', 'source_extractor']:
+            self._subtract_sep_background_level()
+
+    def _subtract_sep_background_level(self, usemean=False):
+        '''
+        Subtract the background level (effectively making the background 0)
+        This method uses the 'sep' backage, which measures a varying
+        background accross the image.
+
+        inputs:
+        -------
+        usemean - Bool - use mean (True) instead of median (False)
+                         Mean is faster, median is better.
+                         Default is False
+
+        outputs:
+        --------
+        self.cleaned_data, having been modified directly
+        (should take less memory than making a copy to modify)
+        '''
+        import sep
+        for i, dat in enumerate(self.cleaned_data.data):
+            print(f"Subtracting background level in image {i}", end='\r')
+            try:
+                background_value = sep.Background(dat)
+            except ValueError:
+                background_value = sep.Background(dat.byteswap().newbyteorder())
+            self.cleaned_data.data[i] -= background_value
+            # Add a comment to the header about the subtraction
+            now = str(datetime.today())[:19]
+            self.cleaned_data.header[i]['COMMENT'] = (f'Background level '
+                                                  f'subtracted at {now}')
+        print("\nDone")
+
+    def _subtract_average_background_level(self, usemean=False):
         '''
         Subtract the background level (effectively making the background 0)
 
