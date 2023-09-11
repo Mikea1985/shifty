@@ -256,6 +256,9 @@ class DataCleaner():
             self._subtract_average_background_level(usemean=True)
         elif mode in ['sep', 'source_extractor']:
             self._subtract_sep_background_level()
+        else:
+            raise ValueError("subtract_background_level takes mode='mean', 'median'"
+                             " 'sep' or 'source_extractor'")
 
     def _subtract_sep_background_level(self, usemean=False):
         '''
