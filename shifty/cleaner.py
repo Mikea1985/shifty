@@ -525,8 +525,8 @@ class DataCleaner():
         nobs = len(original_data)
         for i in np.arange(len(self.cleaned_data.data)):
             print(f"Subtracting template from image {i}", end='\r')
-            i_min = np.max([0, i - nouter])
-            i_mid1 = np.max([0, i - ninner])
+            i_min = np.max([0, i - nouter + 1])
+            i_mid1 = np.max([0, i - ninner + 1])
             i_mid2 = np.min([i + ninner, nobs])
             i_max = np.min([i + nouter, nobs])
             use_data = (list(original_data[i_min:i_mid1])
