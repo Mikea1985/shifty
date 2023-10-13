@@ -1093,8 +1093,7 @@ def readOneImageAndHeader(filename=None, extno=0, verbose=False,
         xycuts[3] = (xycuts[3] - 1 + header['NAXIS2']) % header['NAXIS2'] + 1
         if verbose:
             print(xycuts)
-
-        data = data[xycuts[0]:xycuts[1], xycuts[2]:xycuts[3]]
+        data = data[xycuts[2]:xycuts[3], xycuts[0]:xycuts[1]]
         # CRPIX1
         header['OLD_CRPIX1'] = (header['CRPIX1'], header.comments['CRPIX1'])
         header['COMMENT'] = (f'OLD_CRPIX1 added by SHIFTY'
