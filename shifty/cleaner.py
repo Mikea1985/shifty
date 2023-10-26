@@ -350,7 +350,10 @@ class DataCleaner():
                     if (yi**2 + xi**2) <= radius**2:
                         yii = hp_idx[0] + yi
                         xii = hp_idx[1] + xi
-                        self.cleaned_data.data[:, yii, xii] = np.nan
+                        if ((yii < len(self.cleaned_data.data[0, :, 0]))
+                            & (xii < len(self.cleaned_data.data[0, 0, :]))
+                            & (yii >= 0) & (xii >= 0)):
+                            self.cleaned_data.data[:, yii, xii] = np.nan
 
     def mask_outliers(self, sigma_cut_overall = 5, sigma_cut_image = 5,
                       threshold_outlier_pixels=5):
