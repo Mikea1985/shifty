@@ -253,7 +253,7 @@ class DataCleaner():
         if mode=='mean':
             self._subtract_average_background_level(usemean=True)
         elif mode=='median':
-            self._subtract_average_background_level(usemean=True)
+            self._subtract_average_background_level(usemean=False)
         elif mode in ['sep', 'source_extractor']:
             self._subtract_sep_background_level()
         else:
