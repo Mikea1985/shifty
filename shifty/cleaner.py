@@ -315,7 +315,7 @@ class DataCleaner():
             idx = np.abs(dat - background_value) < 5 * std_value
             j = 0
             #print(j, background_value, std_value)
-            while not np.all(idx_old == idx) & (j < 25):
+            while (not np.all(idx_old == idx)) & (j < 25):
                 background_value = (np.nanmean(dat[idx]) if usemean
                                     else np.nanmedian(dat[idx]))
                 std_value = np.nanstd(dat[idx])
