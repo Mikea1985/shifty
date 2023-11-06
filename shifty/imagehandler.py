@@ -1099,13 +1099,13 @@ def readOneImageAndHeader(filename=None, extno=0, verbose=False,
         header['COMMENT'] = (f'OLD_CRPIX1 added by SHIFTY'
                              f' at {str(datetime.today())[:19]}')
         header['COMMENT'] = (f'OLD_CRPIX1 contains old value of CRPIX1')
-        header['CRPIX1'] -= xycuts[2]
+        header['CRPIX1'] -= xycuts[0]
         # CRPIX2
         header['OLD_CRPIX2'] = (header['CRPIX2'], header.comments['CRPIX2'])
         header['COMMENT'] = (f'OLD_CRPIX2 added by SHIFTY'
                              f' at {str(datetime.today())[:19]}')
         header['COMMENT'] = (f'OLD_CRPIX2 contains old value of CRPIX2')
-        header['CRPIX2'] -= xycuts[0]
+        header['CRPIX2'] -= xycuts[2]
         # NAXIS1
         header['OLD_NAXIS1'] = (header['NAXIS1'],
                                 header.comments['NAXIS1'])
